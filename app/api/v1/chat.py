@@ -364,7 +364,7 @@ def validate_request(request: ChatCompletionRequest):
             content = msg.content
 
         # 列表内容
-        if isinstance(content, list):
+        elif isinstance(content, list):
             if not content:
                 raise ValidationException(
                     message="Message content cannot be an empty array",
