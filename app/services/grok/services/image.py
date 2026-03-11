@@ -491,22 +491,10 @@ class ImageWSBaseProcessor(BaseProcessor):
                     ext=item.get("ext"),
                 )
                 
-                # [NEW] 当图像生成存盘时，保存其 tokenId 用以后续延长关联
-                if res and image_id and getattr(self, "token", None):
-                    from app.services.grok.utils.asset_token_map import AssetTokenMap
-                    token_map = await AssetTokenMap.get_instance()
-                    await token_map.save_mapping(image_id, self.token)
-                    
                 return res
                 
             res = self._strip_base64(item.get("blob", ""))
             
-            # [NEW] Base64 响应下同样强绑定
-            if res and image_id and getattr(self, "token", None):
-                from app.services.grok.utils.asset_token_map import AssetTokenMap
-                token_map = await AssetTokenMap.get_instance()
-                await token_map.save_mapping(image_id, self.token)
-                
             return res
         except Exception as e:
             logger.warning(f"Image output failed: {e}")
