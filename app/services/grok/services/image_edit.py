@@ -59,7 +59,6 @@ def _extract_image_post_id(value: str) -> str:
     matches = re.findall(r"([0-9a-fA-F-]{32,36})", text)
     return matches[-1] if matches else ""
 
-
 async def _try_log_image_share_link(
     token: str,
     post_id: str,
@@ -793,6 +792,8 @@ class ImageEditService:
                 request_url = raw_source
                 mention_id = original_id
                 attachment_id = ""
+                resolved_url = ""
+                resolved_id = ""
                 should_upload_for_attachment = _needs_image_edit_reference_upload(
                     item, raw_source
                 )

@@ -39,7 +39,6 @@ from app.services.grok.utils.upload import UploadService
 
 _VIDEO_SEMAPHORE = None
 _VIDEO_SEM_VALUE = 0
-
 def _get_video_semaphore() -> asyncio.Semaphore:
     """Reverse 接口并发控制（video 服务）。"""
     global _VIDEO_SEMAPHORE, _VIDEO_SEM_VALUE
@@ -109,7 +108,6 @@ def _normalize_assets_url(value: str) -> str:
     if raw.startswith("/"):
         return f"https://assets.grok.com{raw}"
     return f"https://assets.grok.com/{raw}"
-
 
 def _log_final_video_payload(
     *,
@@ -425,7 +423,10 @@ class VideoService:
                 source_url = await self._resolve_reference_source_url(token, item)
                 if not source_url:
                     raise ValidationException(f"第 {index + 1} 张参考图缺少可用来源")
-                file_id, file_uri = await upload_service.upload_file(source_url, token)
+                uploaded_file_id, file_uri = await upload_service.upload_file(
+                    source_url, token
+                )
+                file_id = str(uploaded_file_id or "").strip()
                 asset_url = _normalize_assets_url(file_uri)
                 uploaded.append(
                     {
