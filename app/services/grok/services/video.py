@@ -1092,6 +1092,17 @@ class VideoService:
         parent_post_id = (parent_post_id or "").strip() or None
         source_image_url = (source_image_url or "").strip()
         reference_items = [item for item in (reference_items or []) if isinstance(item, dict)]
+        if image_attachments and not reference_items:
+            reference_items = [
+                {
+                    "parent_post_id": "",
+                    "image_url": str(image_url or "").strip(),
+                    "source_image_url": str(image_url or "").strip(),
+                    "mention_alias": f"Image {index}",
+                }
+                for index, image_url in enumerate(image_attachments, start=1)
+                if str(image_url or "").strip()
+            ]
         used_tokens: set[str] = set()
 
         for attempt in range(max_token_retries):
