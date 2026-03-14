@@ -4,6 +4,204 @@
 > [!NOTE]
 > 本项目仅供学习与研究，请在遵守 Grok 使用条款和当地法律法规的前提下使用。
 
+
+## 部署推荐
+
+- 优先推荐 `Render`：适合直接在线部署，配置简单，长期使用比 Vercel 更稳
+- 优先推荐 `Docker / Docker Compose`：适合本地、NAS、云主机、自托管环境
+- `Vercel` 更适合作为轻量无状态部署，如需长期使用请务必配置远程存储
+
+## 快速开始
+
+### 1. 本地运行
+
+要求：
+
+- Python `3.13+`
+- 建议使用 `uv`
+
+启动：
+
+```bash
+git clone https://github.com/XianYuDaXian/grok2api
+cd grok2api
+
+uv sync
+uv run main.py
+```
+
+默认访问：
+
+- Web 首页：`http://127.0.0.1:8000`
+- 管理后台：`http://127.0.0.1:8000/admin`
+
+### 2. 初始化配置
+
+项目默认配置在 [config.defaults.toml](config.defaults.toml)。
+
+推荐优先配置这些环境变量：
+
+| 变量名 | 说明 | 默认值 |
+| :-- | :-- | :-- |
+| `APP_KEY` / `app.app_key` | 管理后台密码 | `grok2api` |
+| `API_KEY` / `app.api_key` | OpenAI 兼容 API Key | 空 |
+| `PUBLIC_ENABLED` / `app.public_enabled` | 是否开启前端 Public 页面 | `false` |
+| `PUBLIC_KEY` / `app.public_key` | Public 页面调用密钥 | 空 |
+| `DATA_DIR` | 数据目录 | `./data` |
+| `LOG_LEVEL` | 日志级别 | `INFO` |
+| `LOG_FILE_ENABLED` | 是否启用文件日志 | `true` |
+| `SERVER_STORAGE_TYPE` | 存储类型：`local` / `redis` / `mysql` / `pgsql` | `local` |
+| `SERVER_STORAGE_URL` | 外部存储连接串 | 空 |
+
+常见存储连接串示例：
+
+- Redis：`redis://:password@host:6379/0`
+- MySQL：`mysql+aiomysql://user:password@host:3306/db`
+- PostgreSQL：`postgresql+asyncpg://user:password@host:5432/db`
+
+## Docker Compose 部署
+
+项目自带 [docker-compose.yml](docker-compose.yml) 和 [Dockerfile](Dockerfile)。
+
+### 方式零：直接 `docker run`
+
+如果你只想快速拉镜像启动，可以直接运行：
+
+```bash
+docker run --rm -p 8000:8000 \
+  -e LOG_LEVEL=INFO \
+  -e SERVER_STORAGE_TYPE=local \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
+  ghcr.io/xianyudaxian/grok2api:latest
+```
+
+Windows PowerShell 示例：
+
+```powershell
+docker run --rm -p 8000:8000 `
+  -e LOG_LEVEL=INFO `
+  -e SERVER_STORAGE_TYPE=local `
+  -v ${PWD}\data:/app/data `
+  -v ${PWD}\logs:/app/logs `
+  ghcr.io/xianyudaxian/grok2api:latest
+```
+
+如果你要长期使用，建议把 `SERVER_STORAGE_TYPE` 改成 `redis/mysql/pgsql`，不要依赖容器内本地状态。
+
+### 方式一：直接使用当前仓库
+
+```bash
+git clone https://github.com/XianYuDaXian/grok2api
+cd grok2api
+docker compose up -d
+```
+
+当前 `docker-compose.yml` 默认使用现成镜像，并挂载：
+
+- `ghcr.io/xianyudaxian/grok2api:latest`
+- `./data:/app/data`
+- `./logs:/app/logs`
+
+### 方式二：使用你自己的代码构建镜像
+
+如果你希望 Compose 始终跑当前仓库代码，建议把 `docker-compose.yml` 中的 `image:` 改成 `build:`：
+
+```yaml
+services:
+  grok2api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+```
+
+然后执行：
+
+```bash
+docker compose up -d --build
+```
+
+### 可选：Cloudflare 自动刷新
+
+如果你的环境需要处理 Cloudflare，可在 Compose 里启用：
+
+- `FLARESOLVERR_URL`
+- `CF_REFRESH_INTERVAL`
+- `CF_TIMEOUT`
+
+并同时启用 `flaresolverr` 服务。
+
+## Vercel 部署
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/XianYuDaXian/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL,PUBLIC_ENABLED,PUBLIC_KEY&envDefaults=%7B%22DATA_DIR%22%3A%22%2Ftmp%2Fdata%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%2C%22PUBLIC_ENABLED%22%3A%22true%22%2C%22PUBLIC_KEY%22%3A%22%22%7D)
+
+项目已包含 [vercel.json](vercel.json)。
+
+Vercel 部署建议：
+
+- 必设 `DATA_DIR=/tmp/data`
+- 建议设 `LOG_FILE_ENABLED=false`
+- 不建议使用 `local` 保存长期状态
+- 推荐直接使用外部 `redis/mysql/pgsql` 保存配置、Token 和运行状态
+- 如需前端工作台，建议同时设置 `PUBLIC_ENABLED=true` 和 `PUBLIC_KEY`
+
+推荐环境变量：
+
+```env
+LOG_LEVEL=INFO
+LOG_FILE_ENABLED=false
+DATA_DIR=/tmp/data
+SERVER_STORAGE_TYPE=redis
+SERVER_STORAGE_URL=redis://:password@host:6379/0
+PUBLIC_ENABLED=true
+PUBLIC_KEY=your-own-long-random-key
+```
+
+如果你使用 PostgreSQL，也可以改成：
+
+```env
+SERVER_STORAGE_TYPE=pgsql
+SERVER_STORAGE_URL=postgresql+asyncpg://user:password@host:5432/db
+```
+
+适用场景：
+
+- 轻量 API 转发
+- 临时演示
+- 无需本地持久化日志/缓存
+
+注意：
+
+- Vercel 的本地磁盘是临时的
+- 后台保存的配置如果依赖 `local`，在冷启动或实例切换后可能恢复默认值
+- 大量视频/图片缓存不适合长期放在 `local`
+- 如果你要长期使用管理后台、Public 页面和工作台，建议从一开始就配置远程存储
+
+## Render 部署
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/XianYuDaXian/grok2api)
+
+项目已包含 [render.yaml](render.yaml)。
+
+默认是 Docker 部署，推荐配置：
+
+- `TZ=Asia/Shanghai`
+- `SERVER_HOST=0.0.0.0`
+- `SERVER_PORT=8000`
+- `PUBLIC_ENABLED=true`
+- `PUBLIC_KEY=<你自己的 public key>`
+
+如果你要长期使用，建议：
+
+- 把 `SERVER_STORAGE_TYPE` 改成 `redis/mysql/pgsql`
+- 配置持久化数据库或缓存
+- 不要依赖本地磁盘保存长期状态
+
+Render 免费实例注意：
+
+- 长时间无访问会休眠
+- 重建实例后本地文件可能丢失
+
 这个仓库是我维护的分支版本，重点做了这些方向的增强：
 
 ## 主要增强
@@ -112,170 +310,6 @@ render.yaml           Render 部署配置
 config.defaults.toml  默认配置
 main.py               应用入口
 ```
-
-## 快速开始
-
-### 1. 本地运行
-
-要求：
-
-- Python `3.13+`
-- 建议使用 `uv`
-
-启动：
-
-```bash
-git clone https://github.com/XianYuDaXian/grok2api
-cd grok2api
-
-uv sync
-uv run main.py
-```
-
-默认访问：
-
-- Web 首页：`http://127.0.0.1:8000`
-- 管理后台：`http://127.0.0.1:8000/admin`
-
-### 2. 初始化配置
-
-项目默认配置在 [config.defaults.toml](config.defaults.toml)。
-
-推荐优先配置这些环境变量：
-
-| 变量名 | 说明 | 默认值 |
-| :-- | :-- | :-- |
-| `APP_KEY` / `app.app_key` | 管理后台密码 | `grok2api` |
-| `API_KEY` / `app.api_key` | OpenAI 兼容 API Key | 空 |
-| `PUBLIC_ENABLED` / `app.public_enabled` | 是否开启前端 Public 页面 | `false` |
-| `PUBLIC_KEY` / `app.public_key` | Public 页面调用密钥 | 空 |
-| `DATA_DIR` | 数据目录 | `./data` |
-| `LOG_LEVEL` | 日志级别 | `INFO` |
-| `LOG_FILE_ENABLED` | 是否启用文件日志 | `true` |
-| `SERVER_STORAGE_TYPE` | 存储类型：`local` / `redis` / `mysql` / `pgsql` | `local` |
-| `SERVER_STORAGE_URL` | 外部存储连接串 | 空 |
-
-常见存储连接串示例：
-
-- Redis：`redis://:password@host:6379/0`
-- MySQL：`mysql+aiomysql://user:password@host:3306/db`
-- PostgreSQL：`postgresql+asyncpg://user:password@host:5432/db`
-
-## Docker Compose 部署
-
-项目自带 [docker-compose.yml](docker-compose.yml) 和 [Dockerfile](Dockerfile)。
-
-### 方式一：直接使用当前仓库
-
-```bash
-git clone https://github.com/XianYuDaXian/grok2api
-cd grok2api
-docker compose up -d
-```
-
-当前 `docker-compose.yml` 默认使用现成镜像，并挂载：
-
-- `./data:/app/data`
-- `./logs:/app/logs`
-
-### 方式二：使用你自己的代码构建镜像
-
-如果你希望 Compose 始终跑当前仓库代码，建议把 `docker-compose.yml` 中的 `image:` 改成 `build:`：
-
-```yaml
-services:
-  grok2api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-```
-
-然后执行：
-
-```bash
-docker compose up -d --build
-```
-
-### 可选：Cloudflare 自动刷新
-
-如果你的环境需要处理 Cloudflare，可在 Compose 里启用：
-
-- `FLARESOLVERR_URL`
-- `CF_REFRESH_INTERVAL`
-- `CF_TIMEOUT`
-
-并同时启用 `flaresolverr` 服务。
-
-## Vercel 部署
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/XianYuDaXian/grok2api&env=LOG_LEVEL,LOG_FILE_ENABLED,DATA_DIR,SERVER_STORAGE_TYPE,SERVER_STORAGE_URL,PUBLIC_ENABLED,PUBLIC_KEY&envDefaults=%7B%22DATA_DIR%22%3A%22%2Ftmp%2Fdata%22%2C%22LOG_FILE_ENABLED%22%3A%22false%22%2C%22LOG_LEVEL%22%3A%22INFO%22%2C%22SERVER_STORAGE_TYPE%22%3A%22local%22%2C%22SERVER_STORAGE_URL%22%3A%22%22%2C%22PUBLIC_ENABLED%22%3A%22true%22%2C%22PUBLIC_KEY%22%3A%22%22%7D)
-
-项目已包含 [vercel.json](vercel.json)。
-
-Vercel 部署建议：
-
-- 必设 `DATA_DIR=/tmp/data`
-- 建议设 `LOG_FILE_ENABLED=false`
-- 不建议使用 `local` 保存长期状态
-- 推荐直接使用外部 `redis/mysql/pgsql` 保存配置、Token 和运行状态
-- 如需前端工作台，建议同时设置 `PUBLIC_ENABLED=true` 和 `PUBLIC_KEY`
-
-推荐环境变量：
-
-```env
-LOG_LEVEL=INFO
-LOG_FILE_ENABLED=false
-DATA_DIR=/tmp/data
-SERVER_STORAGE_TYPE=redis
-SERVER_STORAGE_URL=redis://:password@host:6379/0
-PUBLIC_ENABLED=true
-PUBLIC_KEY=your-own-long-random-key
-```
-
-如果你使用 PostgreSQL，也可以改成：
-
-```env
-SERVER_STORAGE_TYPE=pgsql
-SERVER_STORAGE_URL=postgresql+asyncpg://user:password@host:5432/db
-```
-
-适用场景：
-
-- 轻量 API 转发
-- 临时演示
-- 无需本地持久化日志/缓存
-
-注意：
-
-- Vercel 的本地磁盘是临时的
-- 后台保存的配置如果依赖 `local`，在冷启动或实例切换后可能恢复默认值
-- 大量视频/图片缓存不适合长期放在 `local`
-- 如果你要长期使用管理后台、Public 页面和工作台，建议从一开始就配置远程存储
-
-## Render 部署
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/XianYuDaXian/grok2api)
-
-项目已包含 [render.yaml](render.yaml)。
-
-默认是 Docker 部署，推荐配置：
-
-- `TZ=Asia/Shanghai`
-- `SERVER_HOST=0.0.0.0`
-- `SERVER_PORT=8000`
-- `PUBLIC_ENABLED=true`
-- `PUBLIC_KEY=<你自己的 public key>`
-
-如果你要长期使用，建议：
-
-- 把 `SERVER_STORAGE_TYPE` 改成 `redis/mysql/pgsql`
-- 配置持久化数据库或缓存
-- 不要依赖本地磁盘保存长期状态
-
-Render 免费实例注意：
-
-- 长时间无访问会休眠
-- 重建实例后本地文件可能丢失
 
 ## 前端页面
 
