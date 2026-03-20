@@ -91,7 +91,6 @@ class AppChatReverse:
             "isAsyncChat": False,
             "isReasoning": False,
             "message": message,
-            "modelMode": mode,
             "modelName": model,
             "responseMetadata": {
                 "requestModelDetails": {"modelId": model},
@@ -108,6 +107,10 @@ class AppChatReverse:
 
         if model == "grok-420":
             payload["enable420"] = True
+            if mode:
+                payload["modeId"] = mode
+        elif mode:
+            payload["modelMode"] = mode
 
         custom_personality = AppChatReverse._resolve_custom_personality()
         if custom_personality is not None and "Greet the user" not in message[-1000:]:

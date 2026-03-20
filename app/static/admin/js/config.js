@@ -1,5 +1,8 @@
 let apiKey = '';
 let currentConfig = {};
+let modelRoutingMeta = { models: [], pools: ['ssoBasic', 'ssoSuper'] };
+let modelRoutingAssignments = {};
+let modelRoutingDragId = '';
 const byId = (id) => document.getElementById(id);
 const NUMERIC_FIELDS = new Set([
   'timeout',
@@ -139,6 +142,12 @@ const LOCALE_MAP = {
   },
 
 
+  "model_routing": {
+    "label": "模型池路由",
+    "model_pools": { title: "模型到 Token 池映射", desc: "为每个模型手动指定使用哪个 Token 池。值支持字符串或字符串数组，例如 {\"grok-4.20-expert\":\"ssoSuper\",\"grok-4.20-auto\":[\"ssoBasic\",\"ssoSuper\"]}。" }
+  },
+
+
   "cache": {
     "label": "缓存管理",
     "enable_auto_clean": { title: "自动清理", desc: "是否启用缓存自动清理，开启后按上限自动回收。" },
@@ -164,7 +173,8 @@ const LOCALE_MAP = {
 
 // 配置部分说明（可选）
 const SECTION_DESCRIPTIONS = {
-  "proxy": "配置不正确将导致 403 错误。服务首次请求 Grok 时的 IP 必须与获取 CF Clearance 时的 IP 一致，后续服务器请求 IP 变化不会导致 403。"
+  "proxy": "配置不正确将导致 403 错误。服务首次请求 Grok 时的 IP 必须与获取 CF Clearance 时的 IP 一致，后续服务器请求 IP 变化不会导致 403。",
+  "model_routing": "这里可以手动指定每个模型优先走哪个 Token 池。未配置的模型仍会按系统默认路由。"
 };
 
 // CF 自动刷新联动禁用字段（全部在 proxy section 内）
@@ -312,7 +322,26 @@ function randomKey(len) {
 async function init() {
   apiKey = await ensureAdminKey();
   if (apiKey === null) return;
+  await loadModelRoutingMeta();
   loadData();
+}
+
+async function loadModelRoutingMeta() {
+  try {
+    const res = await fetch('/v1/admin/model-routing/meta', {
+      headers: buildAuthHeaders(apiKey)
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data.models)) {
+      modelRoutingMeta.models = data.models;
+    }
+    if (Array.isArray(data.pools) && data.pools.length) {
+      modelRoutingMeta.pools = data.pools;
+    }
+  } catch (e) {
+    console.warn('模型池路由元数据加载失败', e);
+  }
 }
 
 async function loadData() {
@@ -384,6 +413,182 @@ function renderConfig(data) {
   // 初始化 CF 自动刷新联动状态
   const cfEnabled = data.proxy && data.proxy.enabled;
   applyCfRefreshState(cfEnabled);
+}
+
+function normalizeModelRoutingAssignments(raw) {
+  const next = {};
+  const source = raw && typeof raw === 'object' ? raw : {};
+  Object.entries(source).forEach(([modelId, value]) => {
+    if (typeof value === 'string' && value.trim()) {
+      next[modelId] = value.trim();
+      return;
+    }
+    if (Array.isArray(value)) {
+      const first = value.map(item => String(item).trim()).find(Boolean);
+      if (first) next[modelId] = first;
+    }
+  });
+  return next;
+}
+
+function buildModelRoutingInput(section, key, val) {
+  modelRoutingAssignments = normalizeModelRoutingAssignments(val);
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'routing-board';
+  wrapper.dataset.type = 'model-routing';
+  wrapper.dataset.section = section;
+  wrapper.dataset.key = key;
+
+  const leftPane = document.createElement('div');
+  leftPane.className = 'routing-pane routing-pane-models';
+  leftPane.innerHTML = `
+    <div class="routing-pane-header">
+      <div class="routing-pane-title">模型列表</div>
+      <div class="routing-pane-subtitle">拖到右侧池中即可指定路由，拖回这里表示按系统默认池处理。</div>
+    </div>
+  `;
+
+  const unassignedZone = document.createElement('div');
+  unassignedZone.className = 'routing-dropzone routing-dropzone-source';
+  unassignedZone.dataset.pool = '';
+  registerRoutingDropzone(unassignedZone, '');
+
+  const rightPane = document.createElement('div');
+  rightPane.className = 'routing-pane routing-pane-pools';
+  rightPane.innerHTML = `
+    <div class="routing-pane-header">
+      <div class="routing-pane-title">Token 池</div>
+      <div class="routing-pane-subtitle">模型放到哪个池，后端请求就优先走哪个池。</div>
+    </div>
+  `;
+
+  const poolGrid = document.createElement('div');
+  poolGrid.className = 'routing-pool-grid';
+  const pools = Array.isArray(modelRoutingMeta.pools) && modelRoutingMeta.pools.length
+    ? modelRoutingMeta.pools
+    : ['ssoBasic', 'ssoSuper'];
+
+  pools.forEach(poolName => {
+    const card = document.createElement('div');
+    card.className = 'routing-pool-card';
+
+    const header = document.createElement('div');
+    header.className = 'routing-pool-header';
+    header.innerHTML = `
+      <div class="routing-pool-title">${poolName}</div>
+      <div class="routing-pool-hint">拖拽模型到这里</div>
+    `;
+
+    const zone = document.createElement('div');
+    zone.className = 'routing-dropzone routing-dropzone-pool';
+    zone.dataset.pool = poolName;
+    registerRoutingDropzone(zone, poolName);
+
+    card.appendChild(header);
+    card.appendChild(zone);
+    poolGrid.appendChild(card);
+  });
+
+  leftPane.appendChild(unassignedZone);
+  rightPane.appendChild(poolGrid);
+  wrapper.appendChild(leftPane);
+  wrapper.appendChild(rightPane);
+
+  renderModelRoutingBoard(wrapper);
+  return { input: wrapper, node: wrapper };
+}
+
+function registerRoutingDropzone(zone, poolName) {
+  zone.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    zone.classList.add('is-over');
+  });
+  zone.addEventListener('dragleave', () => {
+    zone.classList.remove('is-over');
+  });
+  zone.addEventListener('drop', (event) => {
+    event.preventDefault();
+    zone.classList.remove('is-over');
+    const modelId = event.dataTransfer.getData('text/plain') || modelRoutingDragId;
+    if (!modelId) return;
+    if (poolName) {
+      modelRoutingAssignments[modelId] = poolName;
+    } else {
+      delete modelRoutingAssignments[modelId];
+    }
+    const board = zone.closest('.routing-board');
+    if (board) renderModelRoutingBoard(board);
+    modelRoutingDragId = '';
+  });
+}
+
+function createModelChip(model) {
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'routing-chip';
+  chip.draggable = true;
+  chip.dataset.modelId = model.id;
+  chip.innerHTML = `
+    <span class="routing-chip-name">${model.display_name || model.id}</span>
+    <span class="routing-chip-id">${model.id}</span>
+  `;
+
+  chip.addEventListener('dragstart', (event) => {
+    modelRoutingDragId = model.id;
+    event.dataTransfer.setData('text/plain', model.id);
+    event.dataTransfer.effectAllowed = 'move';
+    chip.classList.add('is-dragging');
+  });
+  chip.addEventListener('dragend', () => {
+    chip.classList.remove('is-dragging');
+    modelRoutingDragId = '';
+    document.querySelectorAll('.routing-dropzone.is-over').forEach((node) => {
+      node.classList.remove('is-over');
+    });
+  });
+
+  return chip;
+}
+
+function renderModelRoutingBoard(board) {
+  const models = Array.isArray(modelRoutingMeta.models) ? [...modelRoutingMeta.models] : [];
+  models.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+
+  const sourceZone = board.querySelector('.routing-dropzone-source');
+  const poolZones = Array.from(board.querySelectorAll('.routing-dropzone-pool'));
+  if (!sourceZone) return;
+
+  sourceZone.replaceChildren();
+  poolZones.forEach(zone => zone.replaceChildren());
+
+  const assignedModelIds = new Set();
+  poolZones.forEach(zone => {
+    const poolName = zone.dataset.pool || '';
+    const assigned = models.filter(model => modelRoutingAssignments[model.id] === poolName);
+    assigned.forEach(model => {
+      assignedModelIds.add(model.id);
+      zone.appendChild(createModelChip(model));
+    });
+    if (!assigned.length) {
+      zone.appendChild(createRoutingEmptyState('拖拽模型到这里'));
+    }
+  });
+
+  const unassigned = models.filter(model => !assignedModelIds.has(model.id));
+  unassigned.forEach(model => {
+    sourceZone.appendChild(createModelChip(model));
+  });
+  if (!unassigned.length) {
+    sourceZone.appendChild(createRoutingEmptyState('所有模型都已分配到池'));
+  }
+}
+
+function createRoutingEmptyState(text) {
+  const empty = document.createElement('div');
+  empty.className = 'routing-empty';
+  empty.textContent = text;
+  return empty;
 }
 
 function applyCfRefreshState(enabled) {
@@ -468,7 +673,11 @@ function buildFieldCard(section, key, val) {
     ]);
   }
   else if (Array.isArray(val) || typeof val === 'object') {
-    built = buildJsonInput(section, key, val);
+    if (section === 'model_routing' && key === 'model_pools') {
+      built = buildModelRoutingInput(section, key, val);
+    } else {
+      built = buildJsonInput(section, key, val);
+    }
   }
   else {
     if (key === 'api_key' || key === 'app_key' || key === 'public_key') {
@@ -522,11 +731,16 @@ async function saveConfig() {
     const newConfig = typeof structuredClone === 'function'
       ? structuredClone(currentConfig)
       : JSON.parse(JSON.stringify(currentConfig));
-    const inputs = document.querySelectorAll('input[data-section], textarea[data-section], select[data-section]');
+    const inputs = document.querySelectorAll('input[data-section], textarea[data-section], select[data-section], [data-type="model-routing"][data-section]');
 
     inputs.forEach(input => {
       const s = input.dataset.section;
       const k = input.dataset.key;
+      if (input.dataset.type === 'model-routing') {
+        if (!newConfig[s]) newConfig[s] = {};
+        newConfig[s][k] = { ...modelRoutingAssignments };
+        return;
+      }
       let val = input.value;
 
       if (input.type === 'checkbox') {

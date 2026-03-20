@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import verify_app_key
 from app.core.config import config
+from app.services.grok.services.model import ModelService
+from app.services.token import get_token_manager
 from app.core.storage import (
     get_storage as get_storage_backend,
     LocalStorage,
@@ -35,6 +37,27 @@ async def update_config(data: dict):
         return {"status": "success", "message": "配置已更新"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/model-routing/meta", dependencies=[Depends(verify_app_key)])
+async def get_model_routing_meta():
+    """获取模型池路由界面所需的模型与池元数据。"""
+    token_mgr = await get_token_manager()
+    pool_names = set(token_mgr.pools.keys())
+    pool_names.update({"ssoBasic", "ssoSuper"})
+
+    models = [
+        {
+            "id": item.model_id,
+            "display_name": item.display_name,
+        }
+        for item in ModelService.list()
+    ]
+
+    return {
+        "models": models,
+        "pools": sorted(pool_names),
+    }
 
 
 @router.get("/storage", dependencies=[Depends(verify_app_key)])

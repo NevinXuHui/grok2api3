@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Optional, Tuple, List
 from pydantic import BaseModel, Field
 
+from app.core.config import get_config
 from app.core.exceptions import ValidationException
 
 
@@ -36,6 +37,7 @@ class ModelInfo(BaseModel):
     is_image: bool = False
     is_image_edit: bool = False
     is_video: bool = False
+    public: bool = True
 
 
 class ModelService:
@@ -164,15 +166,49 @@ class ModelService:
             is_video=False,
         ),
         ModelInfo(
-            model_id="grok-4.20-beta",
+            model_id="grok-4.20-auto",
             grok_model="grok-420",
-            model_mode="MODEL_MODE_GROK_420",
+            model_mode="auto",
             tier=Tier.BASIC,
             cost=Cost.LOW,
-            display_name="GROK-4.20-BETA",
+            display_name="GROK-4.20-AUTO",
             is_image=False,
             is_image_edit=False,
             is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20-fast",
+            grok_model="grok-420",
+            model_mode="fast",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="GROK-4.20-FAST",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20-expert",
+            grok_model="grok-420",
+            model_mode="expert",
+            tier=Tier.BASIC,
+            cost=Cost.HIGH,
+            display_name="GROK-4.20-EXPERT",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+        ),
+        ModelInfo(
+            model_id="grok-4.20-beta",
+            grok_model="grok-420",
+            model_mode="auto",
+            tier=Tier.BASIC,
+            cost=Cost.LOW,
+            display_name="GROK-4.20-AUTO",
+            is_image=False,
+            is_image_edit=False,
+            is_video=False,
+            public=False,
         ),
         ModelInfo(
             model_id="grok-imagine-1.0",
@@ -215,6 +251,46 @@ class ModelService:
     _map = {m.model_id: m for m in MODELS}
 
     @classmethod
+    def _default_pool_candidates(cls, model_id: str) -> List[str]:
+        """返回模型默认池顺序。"""
+        model = cls.get(model_id)
+        if model and model.tier == Tier.SUPER:
+            return ["ssoSuper"]
+        # 基础模型优先使用 basic 池，缺失时可回退到 super 池
+        return ["ssoBasic", "ssoSuper"]
+
+    @classmethod
+    def _routing_lookup_keys(cls, model_id: str) -> List[str]:
+        """返回模型池路由查找顺序，兼容历史别名。"""
+        keys = [model_id]
+        if model_id == "grok-4.20-beta":
+            keys.append("grok-4.20-auto")
+        return keys
+
+    @classmethod
+    def _configured_pool_candidates(cls, model_id: str) -> Optional[List[str]]:
+        """读取管理配置中的模型池路由。"""
+        routing = get_config("model_routing.model_pools", {})
+        if not isinstance(routing, dict):
+            return None
+
+        for key in cls._routing_lookup_keys(model_id):
+            value = routing.get(key)
+            if isinstance(value, str):
+                pool = value.strip()
+                if pool:
+                    return [pool]
+            elif isinstance(value, list):
+                pools = [
+                    str(item).strip()
+                    for item in value
+                    if str(item).strip()
+                ]
+                if pools:
+                    return pools
+        return None
+
+    @classmethod
     def get(cls, model_id: str) -> Optional[ModelInfo]:
         """获取模型信息"""
         return cls._map.get(model_id)
@@ -222,7 +298,7 @@ class ModelService:
     @classmethod
     def list(cls) -> list[ModelInfo]:
         """获取所有模型"""
-        return list(cls._map.values())
+        return [model for model in cls._map.values() if model.public]
 
     @classmethod
     def valid(cls, model_id: str) -> bool:
@@ -240,19 +316,16 @@ class ModelService:
     @classmethod
     def pool_for_model(cls, model_id: str) -> str:
         """根据模型选择 Token 池"""
-        model = cls.get(model_id)
-        if model and model.tier == Tier.SUPER:
-            return "ssoSuper"
-        return "ssoBasic"
+        pools = cls.pool_candidates_for_model(model_id)
+        return pools[0] if pools else "ssoBasic"
 
     @classmethod
     def pool_candidates_for_model(cls, model_id: str) -> List[str]:
         """按优先级返回可用 Token 池列表"""
-        model = cls.get(model_id)
-        if model and model.tier == Tier.SUPER:
-            return ["ssoSuper"]
-        # 基础模型优先使用 basic 池，缺失时可回退到 super 池
-        return ["ssoBasic", "ssoSuper"]
+        configured = cls._configured_pool_candidates(model_id)
+        if configured:
+            return configured
+        return cls._default_pool_candidates(model_id)
 
 
 __all__ = ["ModelService"]
