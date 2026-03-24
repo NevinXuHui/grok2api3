@@ -377,12 +377,30 @@ body > .video-settings-card > .card-title {
   margin-bottom: 12px;
 }
 
+.panel-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.panel-toggle-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .history-panel .video-stage {
   min-height: 220px;
   max-height: 980px;
   overflow: auto;
   background: #fafafa;
   border-color: var(--video-outline);
+}
+
+.history-panel .video-stage.is-reversed {
+  flex-direction: column-reverse;
 }
 
 .history-panel .video-item {

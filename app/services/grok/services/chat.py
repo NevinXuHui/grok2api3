@@ -259,6 +259,15 @@ def extract_sources_payload(model_response: Dict[str, Any]) -> Dict[str, Any] | 
     return None
 
 
+def extract_render_payload(model_response: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not isinstance(model_response, dict) or not model_response:
+        return None
+    return {
+        "rawModelResponse": model_response,
+        "extraImages": proc_base._collect_images(model_response),
+    }
+
+
 def _get_chat_semaphore() -> asyncio.Semaphore:
     global _CHAT_SEMAPHORE, _CHAT_SEM_VALUE
     value = max(1, int(get_config("chat.concurrent")))
@@ -903,6 +912,7 @@ class StreamProcessor(proc_base.BaseProcessor):
         finish: str = None,
         tool_calls: list = None,
         sources: Dict[str, Any] = None,
+        rendering: Dict[str, Any] = None,
     ) -> str:
         """Build SSE response."""
         delta = {}
@@ -926,6 +936,8 @@ class StreamProcessor(proc_base.BaseProcessor):
         }
         if sources is not None:
             chunk["sources"] = sources
+        if rendering is not None:
+            chunk["rendering"] = rendering
         return f"data: {orjson.dumps(chunk).decode()}\n\n"
 
     def _ensure_source_group(
@@ -1018,6 +1030,9 @@ class StreamProcessor(proc_base.BaseProcessor):
                     continue
 
                 if mr := resp.get("modelResponse"):
+                    render_payload = extract_render_payload(mr)
+                    if render_payload:
+                        yield self._sse(rendering=render_payload)
                     if self.image_think_active and self.think_opened:
                         async for chunk in self._close_think_block():
                             yield chunk
@@ -1361,6 +1376,7 @@ class CollectProcessor(proc_base.BaseProcessor):
                 finish_reason = "tool_calls"
 
         sources_payload = extract_sources_payload(final_model_response)
+        render_payload = extract_render_payload(final_model_response)
         message_obj = {
             "role": "assistant",
             "content": content,
@@ -1371,6 +1387,8 @@ class CollectProcessor(proc_base.BaseProcessor):
             message_obj["tool_calls"] = tool_calls_result
         if sources_payload:
             message_obj["sources"] = sources_payload
+        if render_payload:
+            message_obj["rendering"] = render_payload
 
         return {
             "id": response_id,

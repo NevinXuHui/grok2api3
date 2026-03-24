@@ -103,7 +103,10 @@
         <aside class="panel">
           <div class="panel-head">
             <div class="panel-title">编辑历史</div>
-            <div id="historyCount" class="head-meta">0 条</div>
+            <div class="panel-head-actions">
+              <button id="historyReverseBtn" type="button" class="geist-button-outline panel-toggle-btn">倒序显示</button>
+              <div id="historyCount" class="head-meta">0 条</div>
+            </div>
           </div>
           <div id="historyEmpty" class="empty-state">执行编辑后会在这里记录历史版本</div>
           <div id="historyList" class="history-list"></div>
@@ -173,7 +176,7 @@
   <script src="/static/common/js/toast.js"></script>
   <script src="/static/common/js/prompt-enhancer.js?v=0.1.15"></script>
   <script src="/static/common/js/pwa.js?v=0.1.1"></script>
-  <script src="/static/public/js/imagine_workbench.js?v=0.2.1"></script>
+  <script src="/static/public/js/imagine_workbench.js?v=0.2.2"></script>
 </body>
 
 </html>

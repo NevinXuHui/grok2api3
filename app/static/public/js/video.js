@@ -65,6 +65,7 @@
   const referenceLightboxImg = document.getElementById('referenceLightboxImg');
   const closeReferenceLightboxBtn = document.getElementById('closeReferenceLightboxBtn');
   const historyCount = document.getElementById('historyCount');
+  const videoHistoryReverseBtn = document.getElementById('videoHistoryReverseBtn');
   const editPreviewWrap = editVideo ? editVideo.closest('.edit-preview-wrap') : null;
 
   let taskStates = new Map();
@@ -132,6 +133,7 @@
   let workspaceLockedHeight = 0;
   let editVideoNameTapTimer = 0;
   let editVideoNameTapCount = 0;
+  let videoHistoryReversed = false;
 
   function buildHistoryTitle(type, serial) {
     const n = Math.max(1, parseInt(String(serial || '1'), 10) || 1);
@@ -622,6 +624,15 @@
     if (!historyCount || !videoStage) return;
     const count = videoStage.querySelectorAll('.video-item').length;
     historyCount.textContent = String(count);
+    if (videoHistoryReverseBtn) {
+      videoHistoryReverseBtn.textContent = videoHistoryReversed ? '正序显示' : '倒序显示';
+      videoHistoryReverseBtn.setAttribute('aria-pressed', videoHistoryReversed ? 'true' : 'false');
+    }
+  }
+
+  function syncVideoHistoryOrder() {
+    if (!videoStage) return;
+    videoStage.classList.toggle('is-reversed', videoHistoryReversed);
   }
 
   function removePreviewItem(item) {
@@ -1569,6 +1580,7 @@
     if (videoEmpty) {
       videoEmpty.classList.add('hidden');
     }
+    syncVideoHistoryOrder();
     updateHistoryCount();
     return item;
   }
@@ -3336,6 +3348,14 @@
     });
   }
 
+  if (videoHistoryReverseBtn) {
+    videoHistoryReverseBtn.addEventListener('click', () => {
+      videoHistoryReversed = !videoHistoryReversed;
+      syncVideoHistoryOrder();
+      updateHistoryCount();
+    });
+  }
+
   if (imageFileInput) {
     imageFileInput.addEventListener('change', async () => {
       const files = imageFileInput.files ? Array.from(imageFileInput.files) : [];
@@ -3654,6 +3674,7 @@
     });
 
   updateMeta();
+  syncVideoHistoryOrder();
   updateHistoryCount();
   refreshAllDeleteZoneTracks();
   syncTimelineAvailability();

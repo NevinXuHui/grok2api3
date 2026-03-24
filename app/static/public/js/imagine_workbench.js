@@ -20,6 +20,7 @@
   const historyCount = document.getElementById('historyCount');
   const historyEmpty = document.getElementById('historyEmpty');
   const historyList = document.getElementById('historyList');
+  const historyReverseBtn = document.getElementById('historyReverseBtn');
   const editProgressWrap = document.getElementById('editProgressWrap');
   const editProgressBar = document.getElementById('editProgressBar');
   const editProgressText = document.getElementById('editProgressText');
@@ -35,6 +36,7 @@
     currentModeValue: 'upload',
     history: [],
     editRound: 0,
+    historyReversed: false,
   };
   let workbenchEditAbortController = null;
   let editProgressTimer = null;
@@ -1168,6 +1170,10 @@
     if (!historyList || !historyEmpty || !historyCount) return;
     historyList.innerHTML = '';
     historyCount.textContent = `${state.history.length} 条`;
+    if (historyReverseBtn) {
+      historyReverseBtn.textContent = state.historyReversed ? '正序显示' : '倒序显示';
+      historyReverseBtn.setAttribute('aria-pressed', state.historyReversed ? 'true' : 'false');
+    }
 
     if (!state.history.length) {
       historyEmpty.classList.remove('hidden');
@@ -1175,7 +1181,8 @@
     }
     historyEmpty.classList.add('hidden');
 
-    state.history.forEach((entry) => {
+    const entries = state.historyReversed ? [...state.history].reverse() : state.history;
+    entries.forEach((entry) => {
       const item = document.createElement('div');
       item.className = 'history-item';
 
@@ -1246,6 +1253,13 @@
       item.appendChild(thumb);
       item.appendChild(main);
       historyList.appendChild(item);
+    });
+  }
+
+  if (historyReverseBtn) {
+    historyReverseBtn.addEventListener('click', () => {
+      state.historyReversed = !state.historyReversed;
+      renderHistory();
     });
   }
 
