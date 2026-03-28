@@ -1,0 +1,29 @@
+[Unit]
+Description=Grok2API3 Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/mine/Code/ai-tools/grok2api3
+Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="SERVER_HOST=0.0.0.0"
+Environment="SERVER_PORT=9006"
+Environment="SERVER_WORKERS=1"
+Environment="LOG_LEVEL=INFO"
+Environment="TZ=Asia/Shanghai"
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=-/mine/Code/ai-tools/grok2api3/.env
+ExecStart=/root/.local/bin/uv run granian --interface asgi --host 0.0.0.0 --port 9006 --workers 1 main:app
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=grok2api3
+
+[Install]
+WantedBy=multi-user.target
