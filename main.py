@@ -187,8 +187,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.getenv("SERVER_PORT", "8000")),
-        help="监听端口，默认读取 SERVER_PORT 或 8000",
+        default=int(os.getenv("SERVER_PORT", "9006")),
+        help="监听端口，默认读取 SERVER_PORT 或 9006",
     )
     parser.add_argument(
         "--workers",
