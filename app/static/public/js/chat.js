@@ -717,6 +717,35 @@
     return `\n![${title || 'image'}](${original})\n`;
   }
 
+  function buildRenderedImageSourceMap(rendering) {
+    const cardMap = parseRenderingCards(rendering);
+    const sourceMap = new Map();
+    cardMap.forEach((card) => {
+      if (!card || typeof card !== 'object') return;
+      const image = card.image && typeof card.image === 'object' ? card.image : null;
+      const articleUrl = image ? String(image.link || '').trim() : '';
+      const originalUrl = image ? String(image.original || '').trim() : '';
+      const thumbnailUrl = image ? String(image.thumbnail || '').trim() : '';
+      const resolvedUrl = articleUrl || originalUrl;
+      if (!resolvedUrl) return;
+      const sourceInfo = {
+        href: resolvedUrl,
+        label: getSourceHostname(resolvedUrl),
+        fallbackImage: thumbnailUrl
+      };
+      [
+        originalUrl,
+        normalizeRenderedImageUrl(originalUrl),
+        articleUrl
+      ]
+        .filter(Boolean)
+        .forEach((candidate) => {
+          sourceMap.set(String(candidate), sourceInfo);
+        });
+    });
+    return sourceMap;
+  }
+
   function normalizeRenderedImageUrl(url) {
     const raw = String(url || '').trim();
     if (!raw) return '';
@@ -1008,7 +1037,7 @@
     });
   }
 
-  function renderBasicMarkdown(rawText) {
+  function renderBasicMarkdown(rawText, imageSourceMap = null) {
     const text = (rawText || '').replace(/\\n/g, '\n');
     const htmlLinks = [];
     const linkExtractedText = text
@@ -1046,18 +1075,46 @@
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
         .replace(/\*([^*]+)\*/g, '<em>$1</em>');
 
-      output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-        const safeAlt = escapeHtml(alt || 'image');
-        const safeUrl = escapeHtml(url || '');
-        const caption = safeAlt && safeAlt !== 'image'
-          ? `<figcaption class="message-image-caption">${safeAlt}</figcaption>`
+      output = replaceMarkdownImages(output, ({ alt, middle, url, raw }) => {
+        const normalizedAlt = decodeHtmlEntities(alt || '');
+        const normalizedMiddle = decodeHtmlEntities(middle || '');
+        const normalizedUrl = decodeHtmlEntities(url || '').trim();
+        if (!/^https?:\/\//i.test(normalizedUrl) && !normalizedUrl.startsWith('data:')) {
+          return raw;
+        }
+        const mergedAlt = [String(normalizedAlt || '').trim(), String(normalizedMiddle || '').trim()]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+        const safeAlt = escapeHtml(mergedAlt || normalizedAlt || 'image');
+        const safeUrl = escapeHtml(normalizedUrl);
+        const sourceInfo = imageSourceMap instanceof Map
+          ? (
+            imageSourceMap.get(normalizedUrl)
+            || imageSourceMap.get(normalizeRenderedImageUrl(normalizedUrl))
+            || null
+          )
+          : null;
+        const sourceHref = escapeHtml(sourceInfo && sourceInfo.href ? sourceInfo.href : normalizedUrl);
+        const fallbackSrc = escapeHtml(sourceInfo && sourceInfo.fallbackImage ? sourceInfo.fallbackImage : '');
+        const sourceLabel = escapeHtml(
+          sourceInfo && sourceInfo.label
+            ? sourceInfo.label
+            : getImageSourceLabel(normalizedUrl)
+        );
+        const caption = mergedAlt && mergedAlt !== 'image'
+          ? `<figcaption class="message-image-caption">${escapeHtml(mergedAlt)}</figcaption>`
           : '';
-        return `<figure class="message-image-card"><img src="${safeUrl}" alt="${safeAlt}" loading="lazy">${caption}</figure>`;
+        const sourceBadge = sourceLabel
+          ? `<a class="message-image-source" href="${sourceHref}" target="_blank" rel="noopener noreferrer" title="${sourceHref}">${sourceLabel}</a>`
+          : '';
+        const fallbackAttr = fallbackSrc ? ` data-fallback-src="${fallbackSrc}"` : '';
+        return `<figure class="message-image-card"><img src="${safeUrl}" alt="${safeAlt}" loading="lazy" referrerpolicy="no-referrer" crossorigin="anonymous"${fallbackAttr}>${sourceBadge}${caption}</figure>`;
       });
 
       output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
-        const safeLabel = escapeHtml(label || '');
-        const safeUrl = escapeHtml(url || '');
+        const safeLabel = escapeHtml(decodeHtmlEntities(label || ''));
+        const safeUrl = escapeHtml(decodeHtmlEntities(url || ''));
         return `<a href="${safeUrl}" target="_blank" rel="noopener">${safeLabel}</a>`;
       });
 
@@ -1092,6 +1149,19 @@
     let inTable = false;
     let paragraphLines = [];
 
+    const isStandaloneMediaLine = (line) => {
+      const trimmed = String(line || '').trim();
+      if (!trimmed) return false;
+      if (/^\[[^\]]+\]\((https?:\/\/.+)\)$/.test(trimmed)) {
+        return true;
+      }
+      if (!trimmed.startsWith('![')) {
+        return false;
+      }
+      const replaced = replaceMarkdownImages(trimmed, () => '@@IMG@@');
+      return String(replaced || '').trim() === '@@IMG@@';
+    };
+
     const closeLists = () => {
       if (inUl) {
         htmlParts.push('</ul>');
@@ -1112,20 +1182,35 @@
 
     const flushParagraph = () => {
       if (!paragraphLines.length) return;
-      const joined = paragraphLines.join('<br>');
-      const standaloneMediaLines = paragraphLines.every((line) => {
+      let textChunk = [];
+      let mediaChunk = [];
+
+      const flushTextChunk = () => {
+        if (!textChunk.length) return;
+        htmlParts.push(`<p>${renderInline(textChunk.join('<br>'))}</p>`);
+        textChunk = [];
+      };
+
+      const flushMediaChunk = () => {
+        if (!mediaChunk.length) return;
+        htmlParts.push(mediaChunk.map((line) => renderInline(line.trim())).join(''));
+        mediaChunk = [];
+      };
+
+      paragraphLines.forEach((line) => {
         const trimmed = String(line || '').trim();
-        if (!trimmed) return false;
-        return (
-          /^!\[[^\]]*\]\([^)]+\)$/.test(trimmed) ||
-          /^\[[^\]]+\]\((https?:\/\/[^)]+)\)$/.test(trimmed)
-        );
+        if (!trimmed) return;
+        if (isStandaloneMediaLine(trimmed)) {
+          flushTextChunk();
+          mediaChunk.push(trimmed);
+          return;
+        }
+        flushMediaChunk();
+        textChunk.push(trimmed);
       });
-      if (standaloneMediaLines) {
-        htmlParts.push(paragraphLines.map((line) => renderInline(line.trim())).join(''));
-      } else {
-        htmlParts.push(`<p>${renderInline(joined)}</p>`);
-      }
+
+      flushTextChunk();
+      flushMediaChunk();
       paragraphLines = [];
     };
 
@@ -1344,9 +1429,9 @@
     }));
   }
 
-  function renderFlatBlocks(blocks) {
+  function renderFlatBlocks(blocks, imageSourceMap = null) {
     return (Array.isArray(blocks) ? blocks : []).map((item) => {
-      const body = renderBasicMarkdown((item.lines || []).join('\n').trim());
+      const body = renderBasicMarkdown((item.lines || []).join('\n').trim(), imageSourceMap);
       const typeText = escapeHtml(item.type);
       const typeKey = String(item.type || '').trim().toLowerCase().replace(/\s+/g, '');
       const typeAttr = escapeHtml(typeKey);
@@ -1354,10 +1439,10 @@
     }).join('');
   }
 
-  function renderThinkContent(text, openAll) {
+  function renderThinkContent(text, openAll, imageSourceMap = null) {
     const sections = parseAgentSections(text);
     if (!sections.length) {
-      return renderBasicMarkdown(text);
+      return renderBasicMarkdown(text, imageSourceMap);
     }
     const renderThinkAgentSummary = (title) => {
       const safeTitle = escapeHtml(title);
@@ -1378,7 +1463,7 @@
       }
       return groups.map((group) => {
         const items = group.items.map((item) => {
-          const body = renderBasicMarkdown(item.lines.join('\n').trim());
+          const body = renderBasicMarkdown(item.lines.join('\n').trim(), imageSourceMap);
           const typeText = escapeHtml(item.type);
           const typeKey = String(item.type || '').trim().toLowerCase().replace(/\s+/g, '');
           const typeAttr = escapeHtml(typeKey);
@@ -1396,7 +1481,7 @@
         const synthetic = splitBlocksIntoSyntheticAgents(blocks);
         if (synthetic.length) {
           return synthetic.map((agent, agentIdx) => {
-            const inner = renderFlatBlocks(agent.blocks);
+            const inner = renderFlatBlocks(agent.blocks, imageSourceMap);
             const openAttr = openAll ? ' open' : (idx === 0 && agentIdx === 0 ? ' open' : '');
             return `<details class="think-agent"${openAttr}>${renderThinkAgentSummary(agent.title)}<div class="think-agent-items">${inner}</div></details>`;
           }).join('');
@@ -1404,7 +1489,7 @@
       }
       const inner = blocks.length
         ? renderGroups(blocks, openAll)
-        : `<div class="think-rollout-body">${renderBasicMarkdown(section.lines.join('\n').trim())}</div>`;
+        : `<div class="think-rollout-body">${renderBasicMarkdown(section.lines.join('\n').trim(), imageSourceMap)}</div>`;
       if (!section.title) {
         return `<div class="think-agent-items">${inner}</div>`;
       }
@@ -1414,16 +1499,16 @@
     return `<div class="think-agents">${agentBlocks.join('')}</div>`;
   }
 
-  function renderMarkdown(text) {
+  function renderMarkdown(text, imageSourceMap = null) {
     const raw = text || '';
     const parts = parseThinkSections(raw);
     return parts.map((part) => {
       if (part.type === 'think') {
-        const body = renderThinkContent(part.value.trim(), part.open);
+        const body = renderThinkContent(part.value.trim(), part.open, imageSourceMap);
         const openAttr = part.open ? ' open' : '';
         return `<details class="think-block" data-think="true"${openAttr}><summary class="think-summary">思考</summary><div class="think-content">${body || '<em>（空）</em>'}</div></details>`;
       }
-      return renderBasicMarkdown(part.value);
+      return renderBasicMarkdown(part.value, imageSourceMap);
     }).join('');
   }
 
@@ -1571,6 +1656,12 @@
         }
         const wrapper = document.createElement('div');
         wrapper.className = 'img-grid';
+        if (group.length >= 4) {
+          wrapper.classList.add('img-grid--desktop-scroll');
+        }
+        if (group.length >= 3) {
+          wrapper.classList.add('img-grid--mobile-scroll');
+        }
         const cols = Math.min(4, group.length);
         wrapper.style.setProperty('--cols', String(cols));
         if (groupStart) {
@@ -1609,6 +1700,118 @@
       if (!container || container.closest('.img-grid')) return;
       if (!container.querySelector || !container.querySelector('img')) return;
       wrapImagesInContainer(container);
+    });
+  }
+
+  function updateImageGridLayout(grid) {
+    if (!(grid instanceof HTMLElement)) return;
+    if (window.innerWidth <= 720) {
+      grid.style.removeProperty('grid-template-columns');
+      return;
+    }
+    const figures = Array.from(grid.querySelectorAll(':scope > .message-image-card'));
+    if (figures.length < 2) {
+      grid.style.removeProperty('grid-template-columns');
+      return;
+    }
+    const ratios = figures.map((figure) => {
+      const img = figure.querySelector('img');
+      if (!(img instanceof HTMLImageElement)) return 1;
+      const naturalWidth = Number(img.naturalWidth || 0);
+      const naturalHeight = Number(img.naturalHeight || 0);
+      if (naturalWidth > 0 && naturalHeight > 0) {
+        return Math.max(0.72, Math.min(2.4, naturalWidth / naturalHeight));
+      }
+      return 1;
+    });
+    if (ratios.every((value) => Math.abs(value - 1) < 0.01)) {
+      grid.style.removeProperty('grid-template-columns');
+      return;
+    }
+    const template = ratios.map((value) => `minmax(0, ${value.toFixed(4)}fr)`).join(' ');
+    grid.style.gridTemplateColumns = template;
+  }
+
+  function syncImageGridLayouts(root) {
+    if (!root) return;
+    const grids = root instanceof Element && root.classList.contains('img-grid')
+      ? [root]
+      : Array.from(root.querySelectorAll ? root.querySelectorAll('.img-grid') : []);
+    grids.forEach((grid) => {
+      updateImageGridLayout(grid);
+      const images = Array.from(grid.querySelectorAll(':scope > .message-image-card img'));
+      images.forEach((img) => {
+        if (!(img instanceof HTMLImageElement) || img.dataset.gridBound === '1') return;
+        img.dataset.gridBound = '1';
+        const refresh = () => updateImageGridLayout(grid);
+        img.addEventListener('load', refresh);
+        img.addEventListener('error', refresh);
+      });
+    });
+  }
+
+  function syncImageGridControls(root) {
+    if (!root) return;
+    const grids = root instanceof Element && root.classList.contains('img-grid')
+      ? [root]
+      : Array.from(root.querySelectorAll ? root.querySelectorAll('.img-grid') : []);
+    grids.forEach((grid) => {
+      if (!(grid instanceof HTMLElement)) return;
+      let shell = grid.parentElement;
+      if (!(shell instanceof HTMLElement) || !shell.classList.contains('img-grid-shell')) {
+        shell = document.createElement('div');
+        shell.className = 'img-grid-shell';
+        grid.parentNode && grid.parentNode.insertBefore(shell, grid);
+        shell.appendChild(grid);
+      }
+      let controls = shell.querySelector(':scope > .img-grid-controls');
+      if (!(controls instanceof HTMLElement)) {
+        controls = document.createElement('div');
+        controls.className = 'img-grid-controls';
+        controls.innerHTML = [
+          '<button type="button" class="img-grid-nav img-grid-nav--prev" aria-label="查看上一张"><span class="img-grid-nav__icon" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M12.5 4.5L7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>',
+          '<button type="button" class="img-grid-nav img-grid-nav--next" aria-label="查看下一张"><span class="img-grid-nav__icon" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M7.5 4.5L13 10l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>'
+        ].join('');
+        shell.appendChild(controls);
+      }
+      const prevBtn = controls.querySelector('.img-grid-nav--prev');
+      const nextBtn = controls.querySelector('.img-grid-nav--next');
+      const updateState = () => {
+        const maxScrollLeft = Math.max(0, grid.scrollWidth - grid.clientWidth);
+        const scrollable = maxScrollLeft > 8;
+        controls.hidden = !scrollable;
+        shell.classList.toggle('is-scrollable', scrollable);
+        if (!(prevBtn instanceof HTMLButtonElement) || !(nextBtn instanceof HTMLButtonElement)) return;
+        prevBtn.disabled = !scrollable || grid.scrollLeft <= 8;
+        nextBtn.disabled = !scrollable || grid.scrollLeft >= (maxScrollLeft - 8);
+      };
+      const bindButton = (button, direction) => {
+        if (!(button instanceof HTMLButtonElement) || button.dataset.bound === '1') return;
+        button.dataset.bound = '1';
+        button.addEventListener('click', () => {
+          const items = Array.from(grid.querySelectorAll(':scope > .message-image-card'));
+          if (!items.length) return;
+          const positions = items.map((item) => item.offsetLeft).sort((a, b) => a - b);
+          const current = grid.scrollLeft;
+          const maxScrollLeft = Math.max(0, grid.scrollWidth - grid.clientWidth);
+          let target = current;
+          if (direction > 0) {
+            target = positions.find((value) => value > current + 24) ?? maxScrollLeft;
+          } else {
+            const previous = positions.filter((value) => value < current - 24);
+            target = previous.length ? previous[previous.length - 1] : 0;
+          }
+          target = Math.max(0, Math.min(maxScrollLeft, target));
+          grid.scrollTo({ left: target, behavior: 'smooth' });
+        });
+      };
+      bindButton(prevBtn, -1);
+      bindButton(nextBtn, 1);
+      if (grid.dataset.controlsBound !== '1') {
+        grid.dataset.controlsBound = '1';
+        grid.addEventListener('scroll', updateState, { passive: true });
+      }
+      requestAnimationFrame(updateState);
     });
   }
 
@@ -1737,12 +1940,15 @@
       entry.hasThink = true;
     }
     const renderText = entry.role === 'assistant' ? getRenderableAssistantText(entry) : entry.raw;
+    const imageSourceMap = entry.role === 'assistant'
+      ? buildRenderedImageSourceMap(entry.rendering)
+      : null;
     if (finalize) {
       entry.contentNode.classList.add('rendered');
-      entry.contentNode.innerHTML = renderMarkdown(renderText);
+      entry.contentNode.innerHTML = renderMarkdown(renderText, imageSourceMap);
     } else {
       if (entry.role === 'assistant') {
-        entry.contentNode.innerHTML = renderMarkdown(renderText);
+        entry.contentNode.innerHTML = renderMarkdown(renderText, imageSourceMap);
       } else {
         entry.contentNode.textContent = entry.raw;
       }
@@ -1765,6 +1971,8 @@
     if (entry.role === 'assistant' || entry.role === 'user') {
       liftThinkImages(entry.contentNode);
       applyImageGrid(entry.contentNode);
+      syncImageGridLayouts(entry.contentNode);
+      syncImageGridControls(entry.contentNode);
       enhanceBrokenImages(entry.contentNode);
       bindMessageImagePreview(entry.contentNode);
       bindInlineCitationExpand(entry.contentNode);
@@ -1799,8 +2007,18 @@
       if (img.dataset.retryBound) return;
       img.dataset.retryBound = '1';
       img.addEventListener('error', () => {
+        const fallbackSrc = String(img.dataset.fallbackSrc || '').trim();
+        if (fallbackSrc && img.dataset.fallbackTried !== '1') {
+          img.dataset.fallbackTried = '1';
+          img.src = fallbackSrc;
+          return;
+        }
         if (img.dataset.failed) return;
         img.dataset.failed = '1';
+        const figure = img.closest('.message-image-card');
+        if (figure) {
+          figure.classList.add('is-broken');
+        }
         const wrapper = document.createElement('button');
         wrapper.type = 'button';
         wrapper.className = 'img-retry';
@@ -1810,6 +2028,9 @@
           const original = img.getAttribute('src') || '';
           const cacheBust = original.includes('?') ? '&' : '?';
           img.dataset.failed = '';
+          if (figure) {
+            figure.classList.remove('is-broken');
+          }
           img.src = `${original}${cacheBust}t=${Date.now()}`;
         });
         img.replaceWith(wrapper);
@@ -1817,6 +2038,10 @@
       img.addEventListener('load', () => {
         if (img.dataset.failed) {
           img.dataset.failed = '';
+        }
+        const figure = img.closest('.message-image-card');
+        if (figure) {
+          figure.classList.remove('is-broken');
         }
       });
     });
@@ -1878,6 +2103,78 @@
     return String(value || '').replace(/\s+/g, ' ').trim();
   }
 
+  function decodeHtmlEntities(value) {
+    const raw = String(value || '');
+    if (!raw || !/[&][a-zA-Z#0-9]+;/.test(raw)) return raw;
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = raw;
+    return textarea.value;
+  }
+
+  function replaceMarkdownImages(value, renderImage) {
+    const text = String(value || '');
+    if (!text.includes('![')) return text;
+    let result = '';
+    let index = 0;
+
+    while (index < text.length) {
+      const start = text.indexOf('![', index);
+      if (start === -1) {
+        result += text.slice(index);
+        break;
+      }
+
+      result += text.slice(index, start);
+
+      const altEnd = text.indexOf(']', start + 2);
+      if (altEnd === -1) {
+        result += text.slice(start);
+        break;
+      }
+
+      let cursor = altEnd + 1;
+      while (cursor < text.length && text[cursor] !== '\n' && text[cursor] !== '(') {
+        cursor += 1;
+      }
+      const middle = text.slice(altEnd + 1, cursor);
+
+      if (cursor >= text.length || text[cursor] !== '(') {
+        result += text.slice(start, cursor);
+        index = cursor;
+        continue;
+      }
+
+      let depth = 0;
+      let end = cursor;
+      for (; end < text.length; end += 1) {
+        const ch = text[end];
+        if (ch === '(') {
+          depth += 1;
+        } else if (ch === ')') {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+
+      if (end >= text.length || text[end] !== ')') {
+        result += text.slice(start);
+        break;
+      }
+
+      const alt = text.slice(start + 2, altEnd);
+      const url = text.slice(cursor + 1, end);
+      result += renderImage({
+        alt,
+        middle,
+        url,
+        raw: text.slice(start, end + 1)
+      });
+      index = end + 1;
+    }
+
+    return result;
+  }
+
   function getSourceHostname(url) {
     try {
       return new URL(url).hostname.replace(/^www\./i, '');
@@ -1889,6 +2186,17 @@
   function getSourceFavicon(hostname) {
     if (!hostname) return '';
     return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(hostname)}&sz=256`;
+  }
+
+  function getImageSourceLabel(url) {
+    const raw = String(url || '').trim();
+    if (!raw || raw.startsWith('data:')) return '';
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      return String(parsed.hostname || '').replace(/^www\./i, '');
+    } catch (e) {
+      return '';
+    }
   }
 
   function bindInlineCitationExpand(root) {
@@ -3068,6 +3376,12 @@
         closeAttachmentPreview();
         closeChatImagePreview();
       }
+    });
+    window.addEventListener('resize', () => {
+      document.querySelectorAll('.message-content .img-grid').forEach((grid) => {
+        updateImageGridLayout(grid);
+      });
+      syncImageGridControls(document);
     });
 
     const composerInput = document.querySelector('.composer-input');

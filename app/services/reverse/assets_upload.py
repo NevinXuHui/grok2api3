@@ -209,7 +209,8 @@ class AssetsUploadReverse:
                     except Exception as first_err:
                         logger.warning(
                             "AssetsUploadReverse primary request failed, fallback direct: "
-                            f"error={first_err}"
+                            "error={}",
+                            str(first_err),
                         )
                         try:
                             response = await session.post(
@@ -221,7 +222,8 @@ class AssetsUploadReverse:
                         except Exception as second_err:
                             logger.warning(
                                 "AssetsUploadReverse direct curl request failed, "
-                                f"fallback urllib: error={second_err}"
+                                "fallback urllib: error={}",
+                                str(second_err),
                             )
                             response = await AssetsUploadReverse._urllib_post(
                                 url=UPLOAD_API,
@@ -240,8 +242,10 @@ class AssetsUploadReverse:
                         error_hint = AssetsUploadReverse._extract_error_hint(body_raw)
                         logger.error(
                             "AssetsUploadReverse: Upload failed, "
-                            f"status={response.status_code}, hint={error_hint or '-'}, "
-                            f"body={body_preview or '-'}",
+                            "status={}, hint={}, body={}",
+                            response.status_code,
+                            error_hint or "-",
+                            body_preview or "-",
                             extra={"error_type": "UpstreamException"},
                         )
                         raise UpstreamException(
@@ -261,7 +265,8 @@ class AssetsUploadReverse:
                     if "curl: (35)" in err_msg or '"code"' in err_msg:
                         logger.warning(
                             "AssetsUpload transient exception, mark as retryable: "
-                            f"{err_msg}"
+                            "{}",
+                            err_msg,
                         )
                         last_fallback_error: UpstreamException | None = None
                         # 部分 '"code"' 异常不会走到上面的降级分支，这里再强制兜底一次。
@@ -297,14 +302,16 @@ class AssetsUploadReverse:
                                 last_fallback_error = forced_direct_err
                                 logger.warning(
                                     "AssetsUpload forced direct fallback failed, "
-                                    f"status={forced_direct_err.details.get('status')}, "
-                                    f"hint={forced_direct_err.details.get('hint') or '-'}, "
-                                    f"body={forced_direct_err.details.get('body') or '-'}"
+                                    "status={}, hint={}, body={}",
+                                    forced_direct_err.details.get("status"),
+                                    forced_direct_err.details.get("hint") or "-",
+                                    forced_direct_err.details.get("body") or "-",
                                 )
                             else:
                                 logger.warning(
                                     "AssetsUpload forced direct fallback failed, "
-                                    f"error={forced_direct_err}"
+                                    "error={}",
+                                    str(forced_direct_err),
                                 )
 
                         try:
@@ -336,14 +343,16 @@ class AssetsUploadReverse:
                                 last_fallback_error = forced_urllib_err
                                 logger.warning(
                                     "AssetsUpload forced urllib fallback failed, "
-                                    f"status={forced_urllib_err.details.get('status')}, "
-                                    f"hint={forced_urllib_err.details.get('hint') or '-'}, "
-                                    f"body={forced_urllib_err.details.get('body') or '-'}"
+                                    "status={}, hint={}, body={}",
+                                    forced_urllib_err.details.get("status"),
+                                    forced_urllib_err.details.get("hint") or "-",
+                                    forced_urllib_err.details.get("body") or "-",
                                 )
                             else:
                                 logger.warning(
                                     "AssetsUpload forced urllib fallback failed, "
-                                    f"error={forced_urllib_err}"
+                                    "error={}",
+                                    str(forced_urllib_err),
                                 )
 
                         if last_fallback_error is not None:
@@ -373,7 +382,8 @@ class AssetsUploadReverse:
 
             # Handle other non-upstream exceptions
             logger.error(
-                f"AssetsUploadReverse: Upload failed, {str(e)}",
+                "AssetsUploadReverse: Upload failed, {}",
+                str(e),
                 extra={"error_type": type(e).__name__},
             )
             raise UpstreamException(

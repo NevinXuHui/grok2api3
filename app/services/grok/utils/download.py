@@ -25,6 +25,16 @@ from app.services.reverse.assets_download import AssetsDownloadReverse
 from app.services.reverse.utils.headers import build_headers
 from app.services.grok.utils.locks import _get_download_semaphore, _file_lock
 
+_CONTENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+}
+
 
 class DownloadService:
     """Assets download service."""
@@ -53,12 +63,7 @@ class DownloadService:
     async def resolve_url(
         self, path_or_url: str, token: str, media_type: str = "image"
     ) -> str:
-        if self._is_public_share_url(path_or_url):
-            app_url = get_config("app.app_url")
-            filename = self._public_cache_filename(path_or_url, media_type)
-            if app_url:
-                await self.download_file(path_or_url, token, media_type)
-                return f"{app_url.rstrip('/')}/v1/files/{media_type}/{filename}"
+        if self._is_public_direct_url(path_or_url):
             return path_or_url
 
         asset_url = path_or_url
@@ -88,10 +93,27 @@ class DownloadService:
         )
 
     @staticmethod
+    def _is_grok_asset_url(url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        host = (parsed.hostname or "").lower()
+        return host == "assets.grok.com"
+
+    @staticmethod
     def _is_localhost_url(url: str) -> bool:
         parsed = urlparse(str(url or "").strip())
         host = (parsed.hostname or "").lower()
         return host in {"localhost", "127.0.0.1", "::1"}
+
+    @classmethod
+    def _is_public_direct_url(cls, url: str) -> bool:
+        text = str(url or "").strip()
+        if not text.startswith(("http://", "https://")):
+            return False
+        if cls._is_localhost_url(text):
+            return False
+        if cls._is_public_share_url(text):
+            return True
+        return not cls._is_grok_asset_url(text)
 
     @staticmethod
     def _public_cache_filename(file_url: str, media_type: str = "image") -> str:
@@ -131,9 +153,13 @@ class DownloadService:
             base_proxy = (get_config("proxy.base_proxy_url") or "").strip()
             asset_proxy = (get_config("proxy.asset_proxy_url") or "").strip()
             proxy_url = asset_proxy or base_proxy
+            guessed_content_type = _CONTENT_TYPES.get(
+                Path(urlparse(file_url).path).suffix.lower()
+            )
             headers = build_headers(
                 cookie_token="",
-                content_type="video/mp4" if media_type == "video" else "image/jpeg",
+                content_type=guessed_content_type
+                or ("video/mp4" if media_type == "video" else "image/jpeg"),
                 origin="https://grok.com",
                 referer="https://grok.com/",
             )
@@ -274,28 +300,34 @@ class DownloadService:
             if not self._is_url(file_path):
                 raise AppException("Invalid file path", code="invalid_file_path")
 
-            file_path = self._normalize_path(file_path)
-            lock_name = f"dl_b64_{hashlib.sha1(file_path.encode()).hexdigest()[:16]}"
-            lock_timeout = max(1, int(get_config("asset.download_timeout")))
-            async with _get_download_semaphore():
-                async with _file_lock(lock_name, timeout=lock_timeout):
-                    session = await self.create()
-                    response = await AssetsDownloadReverse.request(
-                        session, token, file_path
-                    )
-
-            if hasattr(response, "aiter_content"):
-                data = bytearray()
-                async for chunk in response.aiter_content():
-                    if chunk:
-                        data.extend(chunk)
-                raw = bytes(data)
+            if self._is_public_direct_url(file_path):
+                raise AppException(
+                    "Third-party image does not support server-side base64 render",
+                    code="third_party_direct_url",
+                )
             else:
-                raw = response.content
+                file_path = self._normalize_path(file_path)
+                lock_name = f"dl_b64_{hashlib.sha1(file_path.encode()).hexdigest()[:16]}"
+                lock_timeout = max(1, int(get_config("asset.download_timeout")))
+                async with _get_download_semaphore():
+                    async with _file_lock(lock_name, timeout=lock_timeout):
+                        session = await self.create()
+                        response = await AssetsDownloadReverse.request(
+                            session, token, file_path
+                        )
 
-            content_type = response.headers.get(
-                "content-type", "application/octet-stream"
-            ).split(";")[0]
+                if hasattr(response, "aiter_content"):
+                    data = bytearray()
+                    async for chunk in response.aiter_content():
+                        if chunk:
+                            data.extend(chunk)
+                    raw = bytes(data)
+                else:
+                    raw = response.content
+
+                content_type = response.headers.get(
+                    "content-type", "application/octet-stream"
+                ).split(";")[0]
             data_uri = f"data:{content_type};base64,{base64.b64encode(raw).decode()}"
 
             return data_uri
@@ -329,8 +361,11 @@ class DownloadService:
         Returns:
             Tuple[Optional[Path], str]: The path of the downloaded file and the MIME type.
         """
-        if self._is_public_share_url(file_path):
-            return await self._download_public_url(file_path, media_type)
+        if self._is_public_direct_url(file_path):
+            raise AppException(
+                "Third-party direct URL should be served by browser directly",
+                code="third_party_direct_url",
+            )
 
         started_at = time.perf_counter()
         async with _get_download_semaphore():
