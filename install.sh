@@ -181,14 +181,19 @@ check_uv() {
 
 check_port_free() {
   local port_in_use=0
+  local pid=""
 
   if command -v ss >/dev/null 2>&1; then
     if ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${PORT}$"; then
       port_in_use=1
+      # 尝试获取占用端口的进程 PID
+      pid=$(ss -ltnp 2>/dev/null | grep ":${PORT}" | grep -oP 'pid=\K[0-9]+' | head -1)
     fi
   elif command -v netstat >/dev/null 2>&1; then
     if netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${PORT}$"; then
       port_in_use=1
+      # 尝试获取占用端口的进程 PID
+      pid=$(netstat -ltnp 2>/dev/null | grep ":${PORT}" | awk '{print $7}' | grep -oP '^[0-9]+' | head -1)
     fi
   else
     warning "未找到 ss 或 netstat，跳过端口占用检查。"
@@ -196,9 +201,78 @@ check_port_free() {
   fi
 
   if [[ "$port_in_use" -eq 1 ]]; then
-    error "端口 ${PORT} 已被占用，请先释放后再安装。"
+    warning "端口 ${PORT} 已被占用。"
+
+    if [[ -n "$pid" ]]; then
+      local process_info=$(ps -p "$pid" -o comm= 2>/dev/null || echo "未知进程")
+      info "占用进程: PID=${pid}, 名称=${process_info}"
+
+      if [[ "$ASSUME_YES" -eq 1 ]]; then
+        info "自动模式：正在终止进程 ${pid}..."
+        kill_process "$pid"
+      else
+        printf "\n%b是否终止该进程？%b [y/N]: " "$COLOR_YELLOW" "$COLOR_RESET"
+        read -r reply
+        case "$reply" in
+          y|Y|yes|YES)
+            kill_process "$pid"
+            ;;
+          *)
+            error "用户取消操作，端口 ${PORT} 仍被占用。"
+            exit 1
+            ;;
+        esac
+      fi
+    else
+      error "无法获取占用端口的进程信息，请手动释放端口 ${PORT}。"
+      info "可使用以下命令查看: lsof -i :${PORT} 或 ss -ltnp | grep ${PORT}"
+      exit 1
+    fi
+  fi
+}
+
+kill_process() {
+  local pid="$1"
+
+  if ! ps -p "$pid" >/dev/null 2>&1; then
+    warning "进程 ${pid} 已不存在。"
+    return
+  fi
+
+  info "发送 SIGTERM 信号到进程 ${pid}..."
+  kill "$pid" 2>/dev/null || true
+
+  # 等待进程优雅退出
+  local wait_count=0
+  while ps -p "$pid" >/dev/null 2>&1 && [[ $wait_count -lt 5 ]]; do
+    sleep 1
+    wait_count=$((wait_count + 1))
+  done
+
+  # 如果进程仍然存在，强制终止
+  if ps -p "$pid" >/dev/null 2>&1; then
+    warning "进程未响应 SIGTERM，发送 SIGKILL 强制终止..."
+    kill -9 "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+
+  if ps -p "$pid" >/dev/null 2>&1; then
+    error "无法终止进程 ${pid}，请手动处理。"
     exit 1
   fi
+
+  success "进程 ${pid} 已终止。"
+
+  # 再次检查端口是否释放
+  sleep 1
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn | awk '{print $4}' | grep -Eq "(^|:)${PORT}$"; then
+      error "端口 ${PORT} 仍被占用，可能有其他进程正在使用。"
+      exit 1
+    fi
+  fi
+
+  success "端口 ${PORT} 已释放。"
 }
 
 port_is_listening() {
