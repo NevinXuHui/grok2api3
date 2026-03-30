@@ -11,7 +11,7 @@
   <link href="/static/vendor/geist/geist-mono.css" rel="stylesheet">
   <script src="/static/common/js/theme.js?v=0.1.0"></script>
   <link href="/static/common/css/common.css?v=0.3.7" rel="stylesheet">
-  <link href="/static/admin/css/token.css?v=0.3.0" rel="stylesheet">
+  <link href="/static/admin/css/token.css?v=0.3.1" rel="stylesheet">
   <link href="/static/common/css/toast.css" rel="stylesheet">
 </head>
 
@@ -232,9 +232,31 @@
           </select>
         </div>
         <div>
+          <label class="modal-label mb-1 block">导入方式</label>
+          <div class="flex gap-2 mb-3">
+            <button type="button" onclick="switchImportMode('text')" id="import-mode-text" class="geist-button-outline text-xs px-3 flex-1">文本导入</button>
+            <button type="button" onclick="switchImportMode('file')" id="import-mode-file" class="geist-button-outline text-xs px-3 flex-1">文件导入</button>
+          </div>
+        </div>
+        <div id="import-text-container">
           <label class="modal-label mb-1 block">Token 列表 (每行一个)</label>
           <textarea id="import-text" class="geist-input font-mono h-48"
             placeholder="粘贴 Token，一行一个..."></textarea>
+        </div>
+        <div id="import-file-container" class="hidden">
+          <label class="modal-label mb-1 block">选择 JSON 文件（支持多选）</label>
+          <input type="file" id="import-file" accept=".json" multiple class="geist-input" onchange="handleFileSelect(event)">
+          <div class="text-xs text-[var(--accents-5)] mt-2">
+            支持格式：<code class="bg-gray-100 px-1 py-0.5 rounded text-xs">20260327_225311_eyJ0eXAiOiJK.json</code>
+            <span class="ml-2">· 可同时选择多个文件</span>
+          </div>
+          <div id="file-preview" class="hidden mt-3 p-3 bg-gray-50 rounded border border-[var(--border)]">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-xs font-medium">已选择 <span id="file-count" class="text-blue-600">0</span> 个文件</div>
+              <button type="button" onclick="clearFileSelection()" class="text-xs text-red-600 hover:underline">清除</button>
+            </div>
+            <div id="file-list" class="space-y-2 max-h-48 overflow-auto"></div>
+          </div>
         </div>
         <div class="flex justify-end gap-2 pt-2">
           <button onclick="closeImportModal()" class="geist-button-outline text-xs px-3">取消</button>
@@ -306,7 +328,7 @@
   <script src="/static/common/js/header.js?v=0.3.1"></script>
   <script src="/static/common/js/footer.js?v=0.3.0"></script>
   <script src="/static/common/js/toast.js"></script>
-  <script src="/static/admin/js/token.js?v=0.3.0"></script>
+  <script src="/static/admin/js/token.js?v=0.3.1"></script>
 </body>
 
 </html>

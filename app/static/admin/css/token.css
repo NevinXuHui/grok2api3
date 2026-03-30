@@ -499,6 +499,69 @@
       color: #d8b4fe;
     }
 
+    /* Import Mode Buttons */
+    .geist-button-outline.flex-1 {
+      flex: 1;
+    }
+
+    #import-file {
+      padding: 8px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    #import-file::-webkit-file-upload-button {
+      padding: 6px 12px;
+      margin-right: 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--accents-6);
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    #import-file::-webkit-file-upload-button:hover {
+      background: #fafafa;
+      border-color: var(--accents-3);
+    }
+
+    #file-preview {
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    #file-list {
+      scrollbar-width: thin;
+      scrollbar-color: var(--accents-2) transparent;
+    }
+
+    #file-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    #file-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #file-list::-webkit-scrollbar-thumb {
+      background: var(--accents-2);
+      border-radius: 3px;
+    }
+
+    #file-list::-webkit-scrollbar-thumb:hover {
+      background: var(--accents-3);
+    }
+
+    #file-count {
+      font-weight: 600;
+    }
+
     @media (max-width: 900px) {
       main {
         padding-bottom: 5rem; /* 为底部浮窗留出空间 */

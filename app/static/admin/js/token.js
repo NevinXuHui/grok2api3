@@ -561,43 +561,278 @@ async function syncToServer() {
 }
 
 // Import Logic
+let currentImportMode = 'text';
+let importFileDataList = [];
+
 function openImportModal() {
   openModal('import-modal');
+  switchImportMode('text');
 }
 
 function closeImportModal() {
   closeModal('import-modal', () => {
-    const input = byId('import-text');
-    if (input) input.value = '';
+    const textInput = byId('import-text');
+    const fileInput = byId('import-file');
+    if (textInput) textInput.value = '';
+    if (fileInput) fileInput.value = '';
+    importFileDataList = [];
+    byId('file-preview').classList.add('hidden');
+  });
+}
+
+function switchImportMode(mode) {
+  currentImportMode = mode;
+  const textContainer = byId('import-text-container');
+  const fileContainer = byId('import-file-container');
+  const textBtn = byId('import-mode-text');
+  const fileBtn = byId('import-mode-file');
+
+  if (mode === 'text') {
+    textContainer.classList.remove('hidden');
+    fileContainer.classList.add('hidden');
+    textBtn.classList.add('geist-button');
+    textBtn.classList.remove('geist-button-outline');
+    fileBtn.classList.add('geist-button-outline');
+    fileBtn.classList.remove('geist-button');
+  } else {
+    textContainer.classList.add('hidden');
+    fileContainer.classList.remove('hidden');
+    fileBtn.classList.add('geist-button');
+    fileBtn.classList.remove('geist-button-outline');
+    textBtn.classList.add('geist-button-outline');
+    textBtn.classList.remove('geist-button');
+  }
+}
+
+function clearFileSelection() {
+  const fileInput = byId('import-file');
+  if (fileInput) fileInput.value = '';
+  importFileDataList = [];
+  byId('file-preview').classList.add('hidden');
+}
+
+function handleFileSelect(event) {
+  const files = event.target.files;
+  if (!files || files.length === 0) {
+    importFileDataList = [];
+    byId('file-preview').classList.add('hidden');
+    return;
+  }
+
+  importFileDataList = [];
+  const fileListContainer = byId('file-list');
+  fileListContainer.innerHTML = '';
+
+  let loadedCount = 0;
+  const totalFiles = files.length;
+
+  Array.from(files).forEach((file, index) => {
+    const reader = new FileReader();
+
+    reader.onload = function(e) {
+      try {
+        const jsonData = JSON.parse(e.target.result);
+        importFileDataList.push({
+          filename: file.name,
+          data: jsonData,
+          success: true
+        });
+
+        // 添加文件项到列表
+        const fileItem = document.createElement('div');
+        fileItem.className = 'flex items-center justify-between p-2 bg-white rounded border border-green-200';
+        fileItem.innerHTML = `
+          <div class="flex items-center gap-2 flex-1 min-w-0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-green-600 flex-shrink-0">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+            <span class="text-xs truncate" title="${file.name}">${file.name}</span>
+          </div>
+          <span class="text-xs text-green-600 ml-2 flex-shrink-0">✓</span>
+        `;
+        fileListContainer.appendChild(fileItem);
+
+      } catch (err) {
+        importFileDataList.push({
+          filename: file.name,
+          data: null,
+          success: false,
+          error: err.message
+        });
+
+        // 添加错误文件项
+        const fileItem = document.createElement('div');
+        fileItem.className = 'flex items-center justify-between p-2 bg-white rounded border border-red-200';
+        fileItem.innerHTML = `
+          <div class="flex items-center gap-2 flex-1 min-w-0">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-red-600 flex-shrink-0">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+            <span class="text-xs truncate" title="${file.name}">${file.name}</span>
+          </div>
+          <span class="text-xs text-red-600 ml-2 flex-shrink-0" title="${err.message}">✗</span>
+        `;
+        fileListContainer.appendChild(fileItem);
+      }
+
+      loadedCount++;
+      if (loadedCount === totalFiles) {
+        // 所有文件加载完成
+        const successCount = importFileDataList.filter(f => f.success).length;
+        byId('file-count').textContent = successCount;
+        byId('file-preview').classList.remove('hidden');
+
+        if (successCount > 0) {
+          showToast(`成功加载 ${successCount}/${totalFiles} 个文件`, successCount === totalFiles ? 'success' : 'warning');
+        } else {
+          showToast('所有文件加载失败', 'error');
+        }
+      }
+    };
+
+    reader.onerror = function() {
+      importFileDataList.push({
+        filename: file.name,
+        data: null,
+        success: false,
+        error: '文件读取失败'
+      });
+
+      loadedCount++;
+      if (loadedCount === totalFiles) {
+        const successCount = importFileDataList.filter(f => f.success).length;
+        byId('file-count').textContent = successCount;
+        byId('file-preview').classList.remove('hidden');
+        showToast(`成功加载 ${successCount}/${totalFiles} 个文件`, 'warning');
+      }
+    };
+
+    reader.readAsText(file);
   });
 }
 
 async function submitImport() {
   const pool = byId('import-pool').value.trim() || 'ssoBasic';
-  const text = byId('import-text').value;
-  const lines = text.split('\n');
   const defaultQuota = getDefaultQuotaForPool(pool);
+  let tokensToImport = [];
 
-  lines.forEach(line => {
-    const t = line.trim();
-    if (t && !flatTokens.some(ft => ft.token === t)) {
-      flatTokens.push({
-        token: t,
-        pool: pool,
-        status: 'active',
-        quota: defaultQuota,
-        note: '',
-        tags: [],
-        fail_count: 0,
-        use_count: 0,
-        _selected: false
-      });
+  if (currentImportMode === 'file') {
+    // 文件导入模式
+    if (!importFileDataList || importFileDataList.length === 0) {
+      showToast('请先选择文件', 'error');
+      return;
+    }
+
+    const successFiles = importFileDataList.filter(f => f.success);
+    if (successFiles.length === 0) {
+      showToast('没有可用的文件数据', 'error');
+      return;
+    }
+
+    // 解析所有成功加载的文件
+    successFiles.forEach(fileData => {
+      try {
+        const jsonData = fileData.data;
+        let tokenValue = null;
+        let note = '';
+
+        // 尝试多种可能的格式
+        if (typeof jsonData === 'string') {
+          tokenValue = jsonData;
+        } else if (jsonData.token) {
+          tokenValue = jsonData.token;
+        } else if (jsonData.access_token) {
+          tokenValue = jsonData.access_token;
+        } else if (jsonData.auth_token) {
+          tokenValue = jsonData.auth_token;
+        } else if (jsonData.jwt) {
+          tokenValue = jsonData.jwt;
+        }
+
+        // 提取备注信息
+        if (jsonData.note) {
+          note = jsonData.note;
+        } else if (jsonData.email) {
+          note = jsonData.email;
+        } else if (jsonData.username) {
+          note = jsonData.username;
+        } else {
+          note = fileData.filename.replace('.json', '');
+        }
+
+        if (tokenValue) {
+          tokensToImport.push({
+            token: tokenValue,
+            pool: pool,
+            status: 'active',
+            quota: defaultQuota,
+            note: note,
+            tags: [],
+            fail_count: 0,
+            use_count: 0,
+            _selected: false
+          });
+        }
+      } catch (err) {
+        console.error(`解析文件 ${fileData.filename} 失败:`, err);
+      }
+    });
+
+    if (tokensToImport.length === 0) {
+      showToast('所有文件中均未找到有效的 token 字段', 'error');
+      return;
+    }
+
+  } else {
+    // 文本导入模式
+    const text = byId('import-text').value;
+    const lines = text.split('\n');
+
+    lines.forEach(line => {
+      const t = line.trim();
+      if (t) {
+        tokensToImport.push({
+          token: t,
+          pool: pool,
+          status: 'active',
+          quota: defaultQuota,
+          note: '',
+          tags: [],
+          fail_count: 0,
+          use_count: 0,
+          _selected: false
+        });
+      }
+    });
+  }
+
+  // 过滤已存在的 token
+  let addedCount = 0;
+  let duplicateCount = 0;
+  tokensToImport.forEach(newToken => {
+    if (!flatTokens.some(ft => ft.token === newToken.token)) {
+      flatTokens.push(newToken);
+      addedCount++;
+    } else {
+      duplicateCount++;
     }
   });
+
+  if (addedCount === 0) {
+    showToast(`没有新的 Token 被导入（${duplicateCount} 个已存在）`, 'warning');
+    return;
+  }
 
   await syncToServer();
   closeImportModal();
   loadData();
+
+  let message = `成功导入 ${addedCount} 个 Token`;
+  if (duplicateCount > 0) {
+    message += `（跳过 ${duplicateCount} 个重复）`;
+  }
+  showToast(message, 'success');
 }
 
 // Export Logic
