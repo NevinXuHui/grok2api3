@@ -398,7 +398,12 @@ def _parse_sse_chunk(chunk: str) -> Optional[Dict[str, Any]]:
     return payload
 
 
-async def _new_session(prompt: str, aspect_ratio: str, nsfw: Optional[bool]) -> str:
+async def _new_session(
+    prompt: str,
+    aspect_ratio: str,
+    nsfw: Optional[bool],
+    pro: Optional[bool],
+) -> str:
     task_id = uuid.uuid4().hex
     now = time.time()
     async with _IMAGINE_SESSIONS_LOCK:
@@ -407,6 +412,7 @@ async def _new_session(prompt: str, aspect_ratio: str, nsfw: Optional[bool]) -> 
             "prompt": prompt,
             "aspect_ratio": aspect_ratio,
             "nsfw": nsfw,
+            "pro": pro,
             "created_at": now,
         }
     return task_id
@@ -481,19 +487,32 @@ async def public_imagine_ws(websocket: WebSocket):
         except Exception:
             return False
 
-    async def _stop_run():
+    async def _stop_run(force_cancel: bool = False):
         nonlocal run_task
         stop_event.set()
-        if run_task and not run_task.done():
+        if force_cancel and run_task and not run_task.done():
             run_task.cancel()
             try:
                 await run_task
             except Exception:
                 pass
-        run_task = None
-        stop_event.clear()
+            run_task = None
+            stop_event.clear()
+            return
+        if run_task is None:
+            stop_event.clear()
+            return
+        if run_task and run_task.done():
+            run_task = None
+            stop_event.clear()
 
-    async def _run(prompt: str, aspect_ratio: str, nsfw: Optional[bool]):
+    async def _run(
+        prompt: str,
+        aspect_ratio: str,
+        nsfw: Optional[bool],
+        pro: Optional[bool],
+        imagine_task_id: Optional[str],
+    ):
         model_id = "grok-imagine-1.0"
         model_info = ModelService.get(model_id)
         if not model_info or not model_info.is_image:
@@ -515,11 +534,22 @@ async def public_imagine_ws(websocket: WebSocket):
                 "status": "running",
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio,
+                "pro": bool(pro),
                 "run_id": run_id,
             }
         )
 
-        while not stop_event.is_set():
+        while True:
+            if stop_event.is_set():
+                break
+            if imagine_task_id:
+                session_alive = await _get_session(imagine_task_id)
+                if not session_alive:
+                    logger.info(
+                        "Imagine WS stop after current batch: "
+                        f"task_id={imagine_task_id}, run_id={run_id}"
+                    )
+                    break
             try:
                 await token_mgr.reload_if_stale()
                 token = None
@@ -552,6 +582,7 @@ async def public_imagine_ws(websocket: WebSocket):
                     aspect_ratio=aspect_ratio,
                     stream=True,
                     enable_nsfw=nsfw,
+                    enable_pro=pro,
                 )
                 if result.stream:
                     async for chunk in result.data:
@@ -633,8 +664,13 @@ async def public_imagine_ws(websocket: WebSocket):
                 nsfw = payload.get("nsfw")
                 if nsfw is not None:
                     nsfw = bool(nsfw)
+                pro = payload.get("pro")
+                if pro is not None:
+                    pro = bool(pro)
                 await _stop_run()
-                run_task = asyncio.create_task(_run(prompt, aspect_ratio, nsfw))
+                run_task = asyncio.create_task(
+                    _run(prompt, aspect_ratio, nsfw, pro, session_id)
+                )
             elif action == "stop":
                 await _stop_run()
             else:
@@ -651,7 +687,7 @@ async def public_imagine_ws(websocket: WebSocket):
     except Exception as e:
         logger.warning(f"WebSocket error: {e}")
     finally:
-        await _stop_run()
+        await _stop_run(force_cancel=True)
 
         try:
             from starlette.websockets import WebSocketState
@@ -691,6 +727,7 @@ async def public_imagine_sse(
         prompt = str(session.get("prompt") or "").strip()
         ratio = _normalize_imagine_ratio(session.get("aspect_ratio"))
         nsfw = session.get("nsfw")
+        pro = session.get("pro")
     else:
         prompt = (prompt or "").strip()
         if not prompt:
@@ -699,6 +736,9 @@ async def public_imagine_sse(
         nsfw = request.query_params.get("nsfw")
         if nsfw is not None:
             nsfw = str(nsfw).lower() in ("1", "true", "yes", "on")
+        pro = request.query_params.get("pro")
+        if pro is not None:
+            pro = str(pro).lower() in ("1", "true", "yes", "on")
 
     async def event_stream():
         try:
@@ -715,7 +755,7 @@ async def public_imagine_sse(
             run_id = uuid.uuid4().hex
 
             yield (
-                f"data: {orjson.dumps({'type': 'status', 'status': 'running', 'prompt': prompt, 'aspect_ratio': ratio, 'run_id': run_id}).decode()}\n\n"
+                f"data: {orjson.dumps({'type': 'status', 'status': 'running', 'prompt': prompt, 'aspect_ratio': ratio, 'pro': bool(pro), 'run_id': run_id}).decode()}\n\n"
             )
 
             while True:
@@ -758,6 +798,7 @@ async def public_imagine_sse(
                         aspect_ratio=ratio,
                         stream=True,
                         enable_nsfw=nsfw,
+                        enable_pro=pro,
                     )
                     if result.stream:
                         async for chunk in result.data:
@@ -821,6 +862,7 @@ class ImagineStartRequest(BaseModel):
     prompt: str
     aspect_ratio: Optional[str] = "2:3"
     nsfw: Optional[bool] = None
+    pro: Optional[bool] = False
 
 
 @router.post("/imagine/start", dependencies=[Depends(verify_public_key)])
@@ -829,8 +871,8 @@ async def public_imagine_start(data: ImagineStartRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
     ratio = _normalize_imagine_ratio(data.aspect_ratio)
-    task_id = await _new_session(prompt, ratio, data.nsfw)
-    return {"task_id": task_id, "aspect_ratio": ratio}
+    task_id = await _new_session(prompt, ratio, data.nsfw, data.pro)
+    return {"task_id": task_id, "aspect_ratio": ratio, "pro": bool(data.pro)}
 
 
 class ImagineEditRequest(BaseModel):

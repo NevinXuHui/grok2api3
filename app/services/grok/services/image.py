@@ -108,6 +108,7 @@ class ImageGenerationService:
         aspect_ratio: str,
         stream: bool,
         enable_nsfw: Optional[bool] = None,
+        enable_pro: Optional[bool] = None,
     ) -> ImageGenerationResult:
         max_token_retries = int(get_config("retry.max_retry"))
         tried_tokens: set[str] = set()
@@ -144,6 +145,7 @@ class ImageGenerationService:
                             size=size,
                             aspect_ratio=aspect_ratio,
                             enable_nsfw=enable_nsfw,
+                            enable_pro=enable_pro,
                         )
                         async for chunk in result.data:
                             yielded = True
@@ -199,6 +201,7 @@ class ImageGenerationService:
                     response_format=response_format,
                     aspect_ratio=aspect_ratio,
                     enable_nsfw=enable_nsfw,
+                    enable_pro=enable_pro,
                 )
             except UpstreamException as e:
                 last_error = e
@@ -232,15 +235,18 @@ class ImageGenerationService:
         size: str,
         aspect_ratio: str,
         enable_nsfw: Optional[bool] = None,
+        enable_pro: Optional[bool] = None,
     ) -> ImageGenerationResult:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
+        enable_pro = bool(enable_pro)
         upstream = image_service.stream(
             token=token,
             prompt=prompt,
             aspect_ratio=aspect_ratio,
             n=n,
             enable_nsfw=enable_nsfw,
+            enable_pro=enable_pro,
         )
         processor = ImageWSStreamProcessor(
             model_info.model_id,
@@ -268,9 +274,11 @@ class ImageGenerationService:
         response_format: str,
         aspect_ratio: str,
         enable_nsfw: Optional[bool] = None,
+        enable_pro: Optional[bool] = None,
     ) -> ImageGenerationResult:
         if enable_nsfw is None:
             enable_nsfw = bool(get_config("image.nsfw"))
+        enable_pro = bool(enable_pro)
         all_images: List[str] = []
         seen = set()
         expected_per_call = 6
@@ -283,6 +291,7 @@ class ImageGenerationService:
                 aspect_ratio=aspect_ratio,
                 n=call_target,
                 enable_nsfw=enable_nsfw,
+                enable_pro=enable_pro,
             )
             processor = ImageWSCollectProcessor(
                 model_info.model_id,

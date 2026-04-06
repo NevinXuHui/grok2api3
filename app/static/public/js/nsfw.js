@@ -6,6 +6,7 @@
   const resolutionSelect = document.getElementById('resolutionSelect');
   const videoLengthSelect = document.getElementById('videoLengthSelect');
   const nsfwSelect = document.getElementById('nsfwSelect');
+  const qualityButtons = document.querySelectorAll('.nsfw-quality-btn');
 
   const generateBatchBtn = document.getElementById('generateBatchBtn');
   const stopBatchBtn = document.getElementById('stopBatchBtn');
@@ -66,6 +67,7 @@
     editProgressStartedAt: 0,
     editDurationEstimateMs: 14000,
     imageFullscreen: false,
+    imageProMode: false,
   };
   let lightboxEditAbortController = null;
   if (lightboxEditSend) {
@@ -76,6 +78,14 @@
     if (typeof showToast === 'function') {
       showToast(message, type);
     }
+  }
+
+  function setImageQualityMode(enabled) {
+    state.imageProMode = Boolean(enabled);
+    qualityButtons.forEach(btn => {
+      const isActive = String(btn.dataset.pro) === String(state.imageProMode);
+      btn.classList.toggle('active', isActive);
+    });
   }
 
   function normalizeUploadErrorMessage(message) {
@@ -543,7 +553,7 @@
     );
   }
 
-  async function createImagineTask(authHeader, prompt, ratio, nsfwEnabled) {
+  async function createImagineTask(authHeader, prompt, ratio, nsfwEnabled, proEnabled) {
     const res = await fetch('/v1/public/imagine/start', {
       method: 'POST',
       headers: {
@@ -554,6 +564,7 @@
         prompt,
         aspect_ratio: ratio,
         nsfw: nsfwEnabled,
+        pro: proEnabled,
       }),
     });
     if (!res.ok) {
@@ -1372,12 +1383,13 @@
 
     const ratio = ratioSelect ? ratioSelect.value : '16:9';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
+    const proEnabled = state.imageProMode;
     const startCount = state.candidates.length;
     state.imageTargetTotal = startCount + 6;
 
     let data = null;
     try {
-      data = await createImagineTask(authHeader, prompt, ratio, nsfwEnabled);
+      data = await createImagineTask(authHeader, prompt, ratio, nsfwEnabled, proEnabled);
     } catch (e) {
       setChip(imageStatusText, '候选图：创建失败', 'error');
       toast('候选图任务创建失败', 'error');
@@ -1968,6 +1980,15 @@
         return;
       }
       startImageBatch();
+    });
+  }
+
+  if (qualityButtons.length > 0) {
+    setImageQualityMode(false);
+    qualityButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        setImageQualityMode(btn.dataset.pro === 'true');
+      });
     });
   }
   if (nextBatchBtn) {

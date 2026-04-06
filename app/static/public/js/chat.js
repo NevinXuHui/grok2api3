@@ -52,12 +52,14 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
   const STORAGE_KEY = 'grok2api_chat_sessions';
   const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
   const MAX_CONTEXT_MESSAGES = 30;
+  const MAX_PERSIST_SESSIONS = 12;
   const AUTO_SCROLL_THRESHOLD = 48;
   const STREAM_RENDER_INTERVAL_MS = 96;
   const STREAM_PERSIST_INTERVAL_MS = 320;
   const DEFAULT_SESSION_TITLES = ['新会话', 'New Session'];
   const SEND_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>';
   const STOP_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect></svg>';
+  let lastStorageErrorToastAt = 0;
 
   function generateId() {
     return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -89,24 +91,177 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     return '（复合内容）';
   }
 
-  function serializeMessage(msg) {
-    if (!msg || typeof msg !== 'object') return msg;
-    return msg;
+  function trimPersistText(value, maxLength = 80000) {
+    const text = String(value || '');
+    if (text.length <= maxLength) return text;
+    return text.slice(0, maxLength);
   }
 
-  function saveSessions() {
-    if (!sessionsData) return;
-    const snapshot = {
+  function sanitizePersistUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^data:/i.test(raw)) return '';
+    return raw;
+  }
+
+  function sanitizePersistContent(content) {
+    if (typeof content === 'string') {
+      return trimPersistText(content);
+    }
+    if (!Array.isArray(content)) return content;
+    return content.map((block) => {
+      if (!block || typeof block !== 'object') return null;
+      if (block.type === 'text') {
+        return { type: 'text', text: trimPersistText(block.text || '', 24000) };
+      }
+      if (block.type === 'image_url') {
+        const imageUrl = block.image_url && typeof block.image_url === 'object'
+          ? sanitizePersistUrl(block.image_url.url || '')
+          : sanitizePersistUrl(block.url || '');
+        return imageUrl ? { type: 'image_url', image_url: { url: imageUrl } } : null;
+      }
+      if (block.type === 'file') {
+        return {
+          type: 'file',
+          name: trimPersistText(block.name || block.filename || '', 256),
+          url: sanitizePersistUrl(block.url || '')
+        };
+      }
+      return null;
+    }).filter(Boolean);
+  }
+
+  function sanitizePersistSources(sources) {
+    if (!sources || typeof sources !== 'object') return null;
+    try {
+      return JSON.parse(JSON.stringify(sources, (key, value) => {
+        if (typeof value === 'string') {
+          if (/^data:/i.test(value)) return '';
+          return trimPersistText(value, 4000);
+        }
+        return value;
+      }));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function sanitizePersistRendering(rendering) {
+    if (!rendering || typeof rendering !== 'object') return null;
+    const sanitized = {};
+    if (Array.isArray(rendering.extraImages)) {
+      sanitized.extraImages = rendering.extraImages
+        .map((item) => sanitizePersistUrl(item))
+        .filter(Boolean)
+        .slice(0, 24);
+    }
+    const rawModelResponse = rendering.rawModelResponse && typeof rendering.rawModelResponse === 'object'
+      ? rendering.rawModelResponse
+      : null;
+    if (rawModelResponse) {
+      sanitized.rawModelResponse = {
+        message: trimPersistText(rawModelResponse.message || '', 120000),
+        cardAttachmentsJson: Array.isArray(rawModelResponse.cardAttachmentsJson)
+          ? rawModelResponse.cardAttachmentsJson
+            .filter((item) => typeof item === 'string' && item.trim())
+            .map((item) => trimPersistText(item, 12000))
+            .slice(0, 48)
+          : []
+      };
+    }
+    return Object.keys(sanitized).length ? sanitized : null;
+  }
+
+  function sanitizePersistDraftState(draftState) {
+    if (!draftState || typeof draftState !== 'object') return null;
+    return {
+      stableText: trimPersistText(draftState.stableText || '', 120000),
+      liveTailText: trimPersistText(draftState.liveTailText || '', 24000),
+      mediaItems: Array.isArray(draftState.mediaItems)
+        ? draftState.mediaItems.slice(0, 24).map((item) => ({
+          key: trimPersistText(item && item.key || '', 256),
+          cardId: trimPersistText(item && item.cardId || '', 256),
+          src: sanitizePersistUrl(item && item.src || ''),
+          alt: trimPersistText(item && item.alt || '', 512),
+          caption: trimPersistText(item && item.caption || '', 512),
+          sourceHref: sanitizePersistUrl(item && item.sourceHref || ''),
+          sourceLabel: trimPersistText(item && item.sourceLabel || '', 256),
+          fallbackSrc: sanitizePersistUrl(item && item.fallbackSrc || '')
+        })).filter((item) => item.src || item.cardId)
+        : []
+    };
+  }
+
+  function serializeMessage(msg) {
+    if (!msg || typeof msg !== 'object') return msg;
+    const serialized = {
+      ...msg,
+      content: sanitizePersistContent(msg.content),
+      sources: sanitizePersistSources(msg.sources),
+      rendering: sanitizePersistRendering(msg.rendering),
+      draftState: msg.committed ? null : sanitizePersistDraftState(msg.draftState)
+    };
+    return serialized;
+  }
+
+  function buildSessionSnapshot(limitSessions = MAX_PERSIST_SESSIONS, activeOnly = false) {
+    if (!sessionsData) return null;
+    const sourceSessions = Array.isArray(sessionsData.sessions) ? sessionsData.sessions.slice() : [];
+    sourceSessions.sort((a, b) => Number(b && b.updatedAt || 0) - Number(a && a.updatedAt || 0));
+    let picked = sourceSessions;
+    if (activeOnly) {
+      picked = sourceSessions.filter((session) => session && session.id === sessionsData.activeId);
+    } else if (limitSessions > 0 && sourceSessions.length > limitSessions) {
+      const activeId = sessionsData.activeId;
+      const selected = sourceSessions.slice(0, limitSessions);
+      if (activeId && !selected.some((session) => session && session.id === activeId)) {
+        const activeSession = sourceSessions.find((session) => session && session.id === activeId);
+        if (activeSession) {
+          selected.pop();
+          selected.push(activeSession);
+        }
+      }
+      picked = selected;
+    }
+    return {
       activeId: sessionsData.activeId,
-      sessions: sessionsData.sessions.map((session) => ({
+      sessions: picked.map((session) => ({
         ...session,
         messages: Array.isArray(session.messages) ? session.messages.map(serializeMessage) : []
       }))
     };
+  }
+
+  function notifyStorageFailure() {
+    const now = Date.now();
+    if (now - lastStorageErrorToastAt < 2500) return;
+    lastStorageErrorToastAt = now;
+    toast('会话保存失败，已自动精简本地缓存', 'error');
+  }
+
+  function saveSessions() {
+    if (!sessionsData) return;
+    const attempts = [
+      buildSessionSnapshot(MAX_PERSIST_SESSIONS, false),
+      buildSessionSnapshot(6, false),
+      buildSessionSnapshot(1, true)
+    ].filter(Boolean);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+      let saved = false;
+      for (const snapshot of attempts) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+          saved = true;
+          break;
+        } catch (e) {
+          // 继续尝试更小的快照
+        }
+      }
+      if (!saved) {
+        notifyStorageFailure();
+      }
     } catch (e) {
-      toast('会话保存失败，可能是浏览器存储空间不足', 'error');
+      notifyStorageFailure();
     }
   }
 
