@@ -50,6 +50,7 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
   let thinkSpinRafId = 0;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
   const STORAGE_KEY = 'grok2api_chat_sessions';
+  const SESSION_STORAGE_FALLBACK_KEY = 'grok2api_chat_sessions_fallback';
   const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
   const MAX_CONTEXT_MESSAGES = 30;
   const MAX_PERSIST_SESSIONS = 12;
@@ -101,7 +102,7 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     const raw = String(value || '').trim();
     if (!raw) return '';
     if (/^data:/i.test(raw)) return '';
-    return raw;
+    return trimPersistText(raw, 2048);
   }
 
   function sanitizePersistContent(content) {
@@ -118,12 +119,18 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
         const imageUrl = block.image_url && typeof block.image_url === 'object'
           ? sanitizePersistUrl(block.image_url.url || '')
           : sanitizePersistUrl(block.url || '');
-        return imageUrl ? { type: 'image_url', image_url: { url: imageUrl } } : null;
+        return imageUrl ? {
+          type: 'image_url',
+          image_url: { url: imageUrl },
+          persistedPreview: true
+        } : { type: 'image_url', persistedPreview: false };
       }
       if (block.type === 'file') {
         return {
           type: 'file',
           name: trimPersistText(block.name || block.filename || '', 256),
+          mime: trimPersistText(block.mime || '', 128),
+          size: Number(block.size || 0) || 0,
           url: sanitizePersistUrl(block.url || '')
         };
       }
@@ -239,6 +246,24 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     toast('会话保存失败，已自动精简本地缓存', 'error');
   }
 
+  function saveFallbackSession(snapshot) {
+    if (!snapshot) return false;
+    try {
+      sessionStorage.setItem(SESSION_STORAGE_FALLBACK_KEY, JSON.stringify(snapshot));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function clearFallbackSession() {
+    try {
+      sessionStorage.removeItem(SESSION_STORAGE_FALLBACK_KEY);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function saveSessions() {
     if (!sessionsData) return;
     const attempts = [
@@ -251,6 +276,7 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
       for (const snapshot of attempts) {
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+          clearFallbackSession();
           saved = true;
           break;
         } catch (e) {
@@ -258,10 +284,16 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
         }
       }
       if (!saved) {
-        notifyStorageFailure();
+        const fallbackSnapshot = buildSessionSnapshot(1, true);
+        if (!saveFallbackSession(fallbackSnapshot)) {
+          notifyStorageFailure();
+        }
       }
     } catch (e) {
-      notifyStorageFailure();
+      const fallbackSnapshot = buildSessionSnapshot(1, true);
+      if (!saveFallbackSession(fallbackSnapshot)) {
+        notifyStorageFailure();
+      }
     }
   }
 
@@ -312,8 +344,29 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
             msgAttachments = msg.content
                 .filter(b => b && (b.type === 'image_url' || b.type === 'file'))
                 .map(b => {
-                    if (b.type === 'image_url' && b.image_url) return { mime: 'image/jpeg', name: 'image', data: b.image_url.url };
-                    if (b.type === 'file') return { mime: b.mime || '', name: b.name || 'file', data: b.data || b.url };
+                    if (b.type === 'image_url' && b.image_url && b.image_url.url) {
+                      return { mime: 'image/jpeg', name: 'image', data: b.image_url.url };
+                    }
+                    if (b.type === 'image_url') {
+                      return {
+                        mime: 'image/jpeg',
+                        name: '图片附件',
+                        placeholder: true,
+                        placeholderLabel: '图片附件未缓存'
+                      };
+                    }
+                    if (b.type === 'file' && (b.data || b.url)) {
+                      return { mime: b.mime || '', name: b.name || 'file', data: b.data || b.url };
+                    }
+                    if (b.type === 'file') {
+                      return {
+                        mime: b.mime || '',
+                        name: b.name || 'file',
+                        placeholder: true,
+                        placeholderLabel: '文件附件未缓存',
+                        size: Number(b.size || 0) || 0
+                      };
+                    }
                     return null;
                 }).filter(Boolean);
         }
@@ -459,10 +512,100 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     if (isMobileSidebar()) closeSidebar();
   }
 
-  function deleteSession(id) {
+  function collectChatUploadCacheNames(session) {
+    const picked = new Set();
+    if (!session || !Array.isArray(session.messages)) return [];
+
+    const tryCollectFromUrl = (value) => {
+      const text = String(value || '').trim();
+      if (!text) return;
+      const matches = text.match(/chat-upload-[a-z0-9]+\.[a-z0-9]+/ig);
+      if (matches) {
+        matches.forEach((name) => picked.add(name));
+      }
+    };
+
+    const collectFromBlocks = (content) => {
+      if (typeof content === 'string') {
+        tryCollectFromUrl(content);
+        return;
+      }
+      if (!Array.isArray(content)) return;
+      content.forEach((block) => {
+        if (!block || typeof block !== 'object') return;
+        if (block.cacheName) {
+          tryCollectFromUrl(block.cacheName);
+        }
+        if (block.url) {
+          tryCollectFromUrl(block.url);
+        }
+        if (block.data && typeof block.data === 'string' && !String(block.data).startsWith('data:')) {
+          tryCollectFromUrl(block.data);
+        }
+        if (block.type === 'image_url') {
+          const imageUrl = block.image_url && typeof block.image_url === 'object'
+            ? block.image_url.url
+            : '';
+          tryCollectFromUrl(imageUrl);
+        }
+        if (block.type === 'file') {
+          const fileData = block.file && typeof block.file === 'object'
+            ? block.file.file_data
+            : '';
+          tryCollectFromUrl(fileData);
+        }
+      });
+    };
+
+    session.messages.forEach((message) => {
+      if (!message || typeof message !== 'object') return;
+      collectFromBlocks(message.content);
+      if (Array.isArray(message.attachments)) {
+        collectFromBlocks(message.attachments);
+      }
+    });
+
+    return Array.from(picked);
+  }
+
+  async function deleteChatUploadCache(files) {
+    const names = Array.isArray(files)
+      ? Array.from(new Set(files.map((item) => String(item || '').trim()).filter((name) => /^chat-upload-/i.test(name))))
+      : [];
+    if (!names.length) return;
+
+    let headers = { 'Content-Type': 'application/json' };
+    try {
+      const authHeader = await ensurePublicKey();
+      headers = {
+        ...headers,
+        ...buildAuthHeaders(authHeader)
+      };
+    } catch (e) {
+      // ignore auth helper failures
+    }
+
+    const res = await fetch('/v1/public/chat/delete-upload-cache', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ files: names })
+    });
+    if (!res.ok) {
+      throw new Error('删除聊天上传缓存失败');
+    }
+  }
+
+  async function deleteSession(id) {
     if (!sessionsData) return;
     const idx = sessionsData.sessions.findIndex((s) => s.id === id);
     if (idx === -1) return;
+    const targetSession = sessionsData.sessions[idx];
+    const cacheNames = collectChatUploadCacheNames(targetSession);
+    try {
+      await deleteChatUploadCache(cacheNames);
+    } catch (e) {
+      console.warn('deleteSession cache cleanup failed', e);
+    }
     sessionsData.sessions.splice(idx, 1);
     if (!sessionsData.sessions.length) {
       createSession();
@@ -559,6 +702,19 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
       }
     } catch (e) {
       sessionsData = null;
+    }
+    if (!sessionsData) {
+      try {
+        const fallbackRaw = sessionStorage.getItem(SESSION_STORAGE_FALLBACK_KEY);
+        if (fallbackRaw) {
+          sessionsData = JSON.parse(fallbackRaw);
+          if (!sessionsData || !Array.isArray(sessionsData.sessions)) {
+            sessionsData = null;
+          }
+        }
+      } catch (e) {
+        sessionsData = null;
+      }
     }
     if (!sessionsData || !sessionsData.sessions.length) {
       const id = generateId();
@@ -2064,6 +2220,7 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     const prompt = String(text || '').trim();
     const attachmentsList = Array.isArray(files) ? files : [];
     const imageFiles = attachmentsList.filter((item) => String(item.mime || '').startsWith('image/') && item.data);
+    const imagePlaceholders = attachmentsList.filter((item) => String(item.mime || '').startsWith('image/') && !item.data);
     const otherFiles = attachmentsList.filter((item) => !(String(item.mime || '').startsWith('image/')));
 
     const parts = [];
@@ -2078,8 +2235,20 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
       }).join('');
       parts.push(`<div class="user-media-row">${thumbs}</div>`);
     }
+    if (imagePlaceholders.length) {
+      const placeholders = imagePlaceholders.map((item) => {
+        const name = escapeHtml(item.name || '图片附件');
+        const label = escapeHtml(item.placeholderLabel || '图片附件未缓存');
+        return `<div class="user-image-btn user-image-btn--placeholder" aria-label="${name}"><span class="user-image-placeholder__icon">🖼</span><span class="user-image-placeholder__text">${label}</span></div>`;
+      }).join('');
+      parts.push(`<div class="user-media-row">${placeholders}</div>`);
+    }
     if (otherFiles.length) {
-      const tags = otherFiles.map((item) => `<span class="user-file-chip">[文件] ${escapeHtml(item.name || 'file')}</span>`).join('');
+      const tags = otherFiles.map((item) => {
+        const name = escapeHtml(item.name || 'file');
+        const placeholder = item.placeholder ? '（未缓存）' : '';
+        return `<span class="user-file-chip">[文件] ${name}${placeholder}</span>`;
+      }).join('');
       parts.push(`<div class="user-file-row">${tags}</div>`);
     }
     if (!parts.length) {
@@ -3087,6 +3256,33 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     return buildMessagesFrom(messageHistory);
   }
 
+  function sanitizeRequestContent(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return content;
+    return content.map((block) => {
+      if (!block || typeof block !== 'object') return null;
+      if (block.type === 'text') {
+        const text = String(block.text || '');
+        return text ? { type: 'text', text } : null;
+      }
+      if (block.type === 'image_url') {
+        const imageUrl = block.image_url && typeof block.image_url === 'object'
+          ? String(block.image_url.url || '').trim()
+          : String(block.url || '').trim();
+        if (!imageUrl) return null;
+        return { type: 'image_url', image_url: { url: imageUrl } };
+      }
+      if (block.type === 'file') {
+        const fileData = block.file && typeof block.file === 'object'
+          ? String(block.file.file_data || '').trim()
+          : String(block.url || block.data || '').trim();
+        if (!fileData) return null;
+        return { type: 'file', file: { file_data: fileData } };
+      }
+      return null;
+    }).filter(Boolean);
+  }
+
   function buildMessagesFrom(history) {
     const payload = [];
     const systemPrompt = systemInput ? systemInput.value.trim() : '';
@@ -3094,7 +3290,7 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
       payload.push({ role: 'system', content: systemPrompt });
     }
     for (const msg of history) {
-      payload.push({ role: msg.role, content: msg.content });
+      payload.push({ role: msg.role, content: sanitizeRequestContent(msg.content) });
     }
     return payload;
   }
@@ -3348,6 +3544,28 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
     });
   }
 
+  async function uploadCachedChatImage(file) {
+    const formData = new FormData();
+    formData.append('file', file, file.name || 'image');
+    let headers = {};
+    try {
+      const authHeader = await ensurePublicKey();
+      headers = buildAuthHeaders(authHeader);
+    } catch (e) {
+      // ignore auth helper failures
+    }
+    const res = await fetch('/v1/public/chat/upload-image', {
+      method: 'POST',
+      headers,
+      body: formData
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status !== 'success' || !data.url) {
+      throw new Error(data.detail || '图片缓存上传失败');
+    }
+    return data;
+  }
+
   function buildUniqueFileName(name) {
     const baseName = name || 'file';
     const exists = new Set(attachments.map(item => item.name));
@@ -3368,17 +3586,33 @@ import { StreamRenderer } from '../src/chat/stream_renderer.js';
   async function handleFileSelect(file) {
     if (!file) return false;
     try {
-      let dataUrl = '';
-      try {
-        dataUrl = await readFileAsDataUrl(file);
-      } catch (e) {
-        dataUrl = await readFileAsDataUrlFallback(file);
+      const safeName = buildUniqueFileName(file.name || 'file');
+      const isImage = String(file.type || '').startsWith('image/');
+      if (isImage) {
+        const uploaded = await uploadCachedChatImage(file);
+        attachments.push({
+          name: safeName,
+          data: uploaded.url,
+          url: uploaded.url,
+          mime: uploaded.content_type || file.type || 'image/jpeg',
+          size: Number(uploaded.size_bytes || file.size || 0) || 0,
+          cached: true,
+          cacheName: uploaded.filename || ''
+        });
+      } else {
+        let dataUrl = '';
+        try {
+          dataUrl = await readFileAsDataUrl(file);
+        } catch (e) {
+          dataUrl = await readFileAsDataUrlFallback(file);
+        }
+        attachments.push({
+          name: safeName,
+          data: dataUrl,
+          mime: file.type || '',
+          size: Number(file.size || 0) || 0
+        });
       }
-      attachments.push({
-        name: buildUniqueFileName(file.name || 'file'),
-        data: dataUrl,
-        mime: file.type || ''
-      });
       try {
         showAttachmentBadge();
       } catch (e) {

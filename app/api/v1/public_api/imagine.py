@@ -370,6 +370,10 @@ def _normalize_imagine_ratio(value: Optional[str]) -> str:
     return mapped if mapped in _RATIO_ALLOWED else "2:3"
 
 
+def _should_return_all_edit_images() -> bool:
+    return not bool(get_config("image.edit_return_first_image_immediately", False))
+
+
 def _parse_sse_chunk(chunk: str) -> Optional[Dict[str, Any]]:
     if not chunk:
         return None
@@ -1163,6 +1167,7 @@ async def public_imagine_workbench_edit(data: ImagineWorkbenchEditRequest, reque
         )
     else:
         source_image_url = str(data.source_image_url or "").strip()
+    return_all_images = _should_return_all_edit_images()
 
     async def _run_once(progress_cb=None):
         started_at = time.time()
@@ -1214,7 +1219,7 @@ async def public_imagine_workbench_edit(data: ImagineWorkbenchEditRequest, reque
                     source_image_url=single_source_image_url,
                     response_format="url",
                     stream=False,
-                    return_all_images=True,
+                    return_all_images=return_all_images,
                     progress_cb=progress_cb,
                 )
                 mode = "parent_post"
@@ -1240,7 +1245,7 @@ async def public_imagine_workbench_edit(data: ImagineWorkbenchEditRequest, reque
                     root_parent_post_id=parent_post_id if use_parent_mode else "",
                     response_format="url",
                     stream=False,
-                    return_all_images=True,
+                    return_all_images=return_all_images,
                     progress_cb=progress_cb,
                 )
                 mode = "parent_post" if use_parent_mode else "upload"
@@ -1261,7 +1266,7 @@ async def public_imagine_workbench_edit(data: ImagineWorkbenchEditRequest, reque
                 source_image_url=current_source_image_url_input,
                 response_format="url",
                 stream=False,
-                return_all_images=True,
+                return_all_images=return_all_images,
                 progress_cb=progress_cb,
             )
             mode = "parent_post"
@@ -1279,7 +1284,7 @@ async def public_imagine_workbench_edit(data: ImagineWorkbenchEditRequest, reque
                 n=1,
                 response_format="url",
                 stream=False,
-                return_all_images=True,
+                return_all_images=return_all_images,
                 progress_cb=progress_cb,
             )
             mode = "upload"

@@ -3040,14 +3040,17 @@
     let thinkSpinRafId = 0;
     const feedbackUrl = "https://github.com/chenyme/grok2api/issues/new";
     const STORAGE_KEY = "grok2api_chat_sessions";
+    const SESSION_STORAGE_FALLBACK_KEY = "grok2api_chat_sessions_fallback";
     const SIDEBAR_STATE_KEY = "grok2api_chat_sidebar_collapsed";
     const MAX_CONTEXT_MESSAGES = 30;
+    const MAX_PERSIST_SESSIONS = 12;
     const AUTO_SCROLL_THRESHOLD = 48;
     const STREAM_RENDER_INTERVAL_MS = 96;
     const STREAM_PERSIST_INTERVAL_MS = 320;
     const DEFAULT_SESSION_TITLES = ["\u65B0\u4F1A\u8BDD", "New Session"];
     const SEND_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>';
     const STOP_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect></svg>';
+    let lastStorageErrorToastAt = 0;
     function generateId() {
       return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
     }
@@ -3076,23 +3079,181 @@
       }
       return "\uFF08\u590D\u5408\u5185\u5BB9\uFF09";
     }
+    function trimPersistText(value, maxLength = 8e4) {
+      const text = String(value || "");
+      if (text.length <= maxLength) return text;
+      return text.slice(0, maxLength);
+    }
+    function sanitizePersistUrl(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      if (/^data:/i.test(raw)) return "";
+      return trimPersistText(raw, 2048);
+    }
+    function sanitizePersistContent(content) {
+      if (typeof content === "string") {
+        return trimPersistText(content);
+      }
+      if (!Array.isArray(content)) return content;
+      return content.map((block) => {
+        if (!block || typeof block !== "object") return null;
+        if (block.type === "text") {
+          return { type: "text", text: trimPersistText(block.text || "", 24e3) };
+        }
+        if (block.type === "image_url") {
+          const imageUrl = block.image_url && typeof block.image_url === "object" ? sanitizePersistUrl(block.image_url.url || "") : sanitizePersistUrl(block.url || "");
+          return imageUrl ? {
+            type: "image_url",
+            image_url: { url: imageUrl },
+            persistedPreview: true
+          } : { type: "image_url", persistedPreview: false };
+        }
+        if (block.type === "file") {
+          return {
+            type: "file",
+            name: trimPersistText(block.name || block.filename || "", 256),
+            mime: trimPersistText(block.mime || "", 128),
+            size: Number(block.size || 0) || 0,
+            url: sanitizePersistUrl(block.url || "")
+          };
+        }
+        return null;
+      }).filter(Boolean);
+    }
+    function sanitizePersistSources(sources) {
+      if (!sources || typeof sources !== "object") return null;
+      try {
+        return JSON.parse(JSON.stringify(sources, (key, value) => {
+          if (typeof value === "string") {
+            if (/^data:/i.test(value)) return "";
+            return trimPersistText(value, 4e3);
+          }
+          return value;
+        }));
+      } catch (e) {
+        return null;
+      }
+    }
+    function sanitizePersistRendering(rendering) {
+      if (!rendering || typeof rendering !== "object") return null;
+      const sanitized = {};
+      if (Array.isArray(rendering.extraImages)) {
+        sanitized.extraImages = rendering.extraImages.map((item) => sanitizePersistUrl(item)).filter(Boolean).slice(0, 24);
+      }
+      const rawModelResponse = rendering.rawModelResponse && typeof rendering.rawModelResponse === "object" ? rendering.rawModelResponse : null;
+      if (rawModelResponse) {
+        sanitized.rawModelResponse = {
+          message: trimPersistText(rawModelResponse.message || "", 12e4),
+          cardAttachmentsJson: Array.isArray(rawModelResponse.cardAttachmentsJson) ? rawModelResponse.cardAttachmentsJson.filter((item) => typeof item === "string" && item.trim()).map((item) => trimPersistText(item, 12e3)).slice(0, 48) : []
+        };
+      }
+      return Object.keys(sanitized).length ? sanitized : null;
+    }
+    function sanitizePersistDraftState(draftState) {
+      if (!draftState || typeof draftState !== "object") return null;
+      return {
+        stableText: trimPersistText(draftState.stableText || "", 12e4),
+        liveTailText: trimPersistText(draftState.liveTailText || "", 24e3),
+        mediaItems: Array.isArray(draftState.mediaItems) ? draftState.mediaItems.slice(0, 24).map((item) => ({
+          key: trimPersistText(item && item.key || "", 256),
+          cardId: trimPersistText(item && item.cardId || "", 256),
+          src: sanitizePersistUrl(item && item.src || ""),
+          alt: trimPersistText(item && item.alt || "", 512),
+          caption: trimPersistText(item && item.caption || "", 512),
+          sourceHref: sanitizePersistUrl(item && item.sourceHref || ""),
+          sourceLabel: trimPersistText(item && item.sourceLabel || "", 256),
+          fallbackSrc: sanitizePersistUrl(item && item.fallbackSrc || "")
+        })).filter((item) => item.src || item.cardId) : []
+      };
+    }
     function serializeMessage(msg) {
       if (!msg || typeof msg !== "object") return msg;
-      return msg;
+      const serialized = {
+        ...msg,
+        content: sanitizePersistContent(msg.content),
+        sources: sanitizePersistSources(msg.sources),
+        rendering: sanitizePersistRendering(msg.rendering),
+        draftState: msg.committed ? null : sanitizePersistDraftState(msg.draftState)
+      };
+      return serialized;
     }
-    function saveSessions() {
-      if (!sessionsData) return;
-      const snapshot = {
+    function buildSessionSnapshot(limitSessions = MAX_PERSIST_SESSIONS, activeOnly = false) {
+      if (!sessionsData) return null;
+      const sourceSessions = Array.isArray(sessionsData.sessions) ? sessionsData.sessions.slice() : [];
+      sourceSessions.sort((a, b) => Number(b && b.updatedAt || 0) - Number(a && a.updatedAt || 0));
+      let picked = sourceSessions;
+      if (activeOnly) {
+        picked = sourceSessions.filter((session) => session && session.id === sessionsData.activeId);
+      } else if (limitSessions > 0 && sourceSessions.length > limitSessions) {
+        const activeId = sessionsData.activeId;
+        const selected = sourceSessions.slice(0, limitSessions);
+        if (activeId && !selected.some((session) => session && session.id === activeId)) {
+          const activeSession = sourceSessions.find((session) => session && session.id === activeId);
+          if (activeSession) {
+            selected.pop();
+            selected.push(activeSession);
+          }
+        }
+        picked = selected;
+      }
+      return {
         activeId: sessionsData.activeId,
-        sessions: sessionsData.sessions.map((session) => ({
+        sessions: picked.map((session) => ({
           ...session,
           messages: Array.isArray(session.messages) ? session.messages.map(serializeMessage) : []
         }))
       };
+    }
+    function notifyStorageFailure() {
+      const now = Date.now();
+      if (now - lastStorageErrorToastAt < 2500) return;
+      lastStorageErrorToastAt = now;
+      toast("\u4F1A\u8BDD\u4FDD\u5B58\u5931\u8D25\uFF0C\u5DF2\u81EA\u52A8\u7CBE\u7B80\u672C\u5730\u7F13\u5B58", "error");
+    }
+    function saveFallbackSession(snapshot) {
+      if (!snapshot) return false;
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+        sessionStorage.setItem(SESSION_STORAGE_FALLBACK_KEY, JSON.stringify(snapshot));
+        return true;
       } catch (e) {
-        toast("\u4F1A\u8BDD\u4FDD\u5B58\u5931\u8D25\uFF0C\u53EF\u80FD\u662F\u6D4F\u89C8\u5668\u5B58\u50A8\u7A7A\u95F4\u4E0D\u8DB3", "error");
+        return false;
+      }
+    }
+    function clearFallbackSession() {
+      try {
+        sessionStorage.removeItem(SESSION_STORAGE_FALLBACK_KEY);
+      } catch (e) {
+      }
+    }
+    function saveSessions() {
+      if (!sessionsData) return;
+      const attempts = [
+        buildSessionSnapshot(MAX_PERSIST_SESSIONS, false),
+        buildSessionSnapshot(6, false),
+        buildSessionSnapshot(1, true)
+      ].filter(Boolean);
+      try {
+        let saved = false;
+        for (const snapshot of attempts) {
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+            clearFallbackSession();
+            saved = true;
+            break;
+          } catch (e) {
+          }
+        }
+        if (!saved) {
+          const fallbackSnapshot = buildSessionSnapshot(1, true);
+          if (!saveFallbackSession(fallbackSnapshot)) {
+            notifyStorageFailure();
+          }
+        }
+      } catch (e) {
+        const fallbackSnapshot = buildSessionSnapshot(1, true);
+        if (!saveFallbackSession(fallbackSnapshot)) {
+          notifyStorageFailure();
+        }
       }
     }
     function getActiveSession() {
@@ -3138,8 +3299,29 @@
           let msgAttachments = [];
           if (Array.isArray(msg.content)) {
             msgAttachments = msg.content.filter((b) => b && (b.type === "image_url" || b.type === "file")).map((b) => {
-              if (b.type === "image_url" && b.image_url) return { mime: "image/jpeg", name: "image", data: b.image_url.url };
-              if (b.type === "file") return { mime: b.mime || "", name: b.name || "file", data: b.data || b.url };
+              if (b.type === "image_url" && b.image_url && b.image_url.url) {
+                return { mime: "image/jpeg", name: "image", data: b.image_url.url };
+              }
+              if (b.type === "image_url") {
+                return {
+                  mime: "image/jpeg",
+                  name: "\u56FE\u7247\u9644\u4EF6",
+                  placeholder: true,
+                  placeholderLabel: "\u56FE\u7247\u9644\u4EF6\u672A\u7F13\u5B58"
+                };
+              }
+              if (b.type === "file" && (b.data || b.url)) {
+                return { mime: b.mime || "", name: b.name || "file", data: b.data || b.url };
+              }
+              if (b.type === "file") {
+                return {
+                  mime: b.mime || "",
+                  name: b.name || "file",
+                  placeholder: true,
+                  placeholderLabel: "\u6587\u4EF6\u9644\u4EF6\u672A\u7F13\u5B58",
+                  size: Number(b.size || 0) || 0
+                };
+              }
               return null;
             }).filter(Boolean);
           }
@@ -3272,10 +3454,85 @@
       renderSessionList();
       if (isMobileSidebar()) closeSidebar();
     }
-    function deleteSession(id) {
+    function collectChatUploadCacheNames(session) {
+      const picked = /* @__PURE__ */ new Set();
+      if (!session || !Array.isArray(session.messages)) return [];
+      const tryCollectFromUrl = (value) => {
+        const text = String(value || "").trim();
+        if (!text) return;
+        const matches = text.match(/chat-upload-[a-z0-9]+\.[a-z0-9]+/ig);
+        if (matches) {
+          matches.forEach((name) => picked.add(name));
+        }
+      };
+      const collectFromBlocks = (content) => {
+        if (typeof content === "string") {
+          tryCollectFromUrl(content);
+          return;
+        }
+        if (!Array.isArray(content)) return;
+        content.forEach((block) => {
+          if (!block || typeof block !== "object") return;
+          if (block.cacheName) {
+            tryCollectFromUrl(block.cacheName);
+          }
+          if (block.url) {
+            tryCollectFromUrl(block.url);
+          }
+          if (block.data && typeof block.data === "string" && !String(block.data).startsWith("data:")) {
+            tryCollectFromUrl(block.data);
+          }
+          if (block.type === "image_url") {
+            const imageUrl = block.image_url && typeof block.image_url === "object" ? block.image_url.url : "";
+            tryCollectFromUrl(imageUrl);
+          }
+          if (block.type === "file") {
+            const fileData = block.file && typeof block.file === "object" ? block.file.file_data : "";
+            tryCollectFromUrl(fileData);
+          }
+        });
+      };
+      session.messages.forEach((message) => {
+        if (!message || typeof message !== "object") return;
+        collectFromBlocks(message.content);
+        if (Array.isArray(message.attachments)) {
+          collectFromBlocks(message.attachments);
+        }
+      });
+      return Array.from(picked);
+    }
+    async function deleteChatUploadCache(files) {
+      const names = Array.isArray(files) ? Array.from(new Set(files.map((item) => String(item || "").trim()).filter((name) => /^chat-upload-/i.test(name)))) : [];
+      if (!names.length) return;
+      let headers = { "Content-Type": "application/json" };
+      try {
+        const authHeader = await ensurePublicKey();
+        headers = {
+          ...headers,
+          ...buildAuthHeaders(authHeader)
+        };
+      } catch (e) {
+      }
+      const res = await fetch("/v1/public/chat/delete-upload-cache", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ files: names })
+      });
+      if (!res.ok) {
+        throw new Error("\u5220\u9664\u804A\u5929\u4E0A\u4F20\u7F13\u5B58\u5931\u8D25");
+      }
+    }
+    async function deleteSession(id) {
       if (!sessionsData) return;
       const idx = sessionsData.sessions.findIndex((s) => s.id === id);
       if (idx === -1) return;
+      const targetSession = sessionsData.sessions[idx];
+      const cacheNames = collectChatUploadCacheNames(targetSession);
+      try {
+        await deleteChatUploadCache(cacheNames);
+      } catch (e) {
+        console.warn("deleteSession cache cleanup failed", e);
+      }
       sessionsData.sessions.splice(idx, 1);
       if (!sessionsData.sessions.length) {
         createSession();
@@ -3362,6 +3619,19 @@
         }
       } catch (e) {
         sessionsData = null;
+      }
+      if (!sessionsData) {
+        try {
+          const fallbackRaw = sessionStorage.getItem(SESSION_STORAGE_FALLBACK_KEY);
+          if (fallbackRaw) {
+            sessionsData = JSON.parse(fallbackRaw);
+            if (!sessionsData || !Array.isArray(sessionsData.sessions)) {
+              sessionsData = null;
+            }
+          }
+        } catch (e) {
+          sessionsData = null;
+        }
       }
       if (!sessionsData || !sessionsData.sessions.length) {
         const id = generateId();
@@ -4689,6 +4959,7 @@ ${renderedAnswer}`.trim();
       const prompt = String(text || "").trim();
       const attachmentsList = Array.isArray(files) ? files : [];
       const imageFiles = attachmentsList.filter((item) => String(item.mime || "").startsWith("image/") && item.data);
+      const imagePlaceholders = attachmentsList.filter((item) => String(item.mime || "").startsWith("image/") && !item.data);
       const otherFiles = attachmentsList.filter((item) => !String(item.mime || "").startsWith("image/"));
       const parts = [];
       if (prompt) {
@@ -4702,8 +4973,20 @@ ${renderedAnswer}`.trim();
         }).join("");
         parts.push(`<div class="user-media-row">${thumbs}</div>`);
       }
+      if (imagePlaceholders.length) {
+        const placeholders = imagePlaceholders.map((item) => {
+          const name = escapeHtml2(item.name || "\u56FE\u7247\u9644\u4EF6");
+          const label = escapeHtml2(item.placeholderLabel || "\u56FE\u7247\u9644\u4EF6\u672A\u7F13\u5B58");
+          return `<div class="user-image-btn user-image-btn--placeholder" aria-label="${name}"><span class="user-image-placeholder__icon">\u{1F5BC}</span><span class="user-image-placeholder__text">${label}</span></div>`;
+        }).join("");
+        parts.push(`<div class="user-media-row">${placeholders}</div>`);
+      }
       if (otherFiles.length) {
-        const tags = otherFiles.map((item) => `<span class="user-file-chip">[\u6587\u4EF6] ${escapeHtml2(item.name || "file")}</span>`).join("");
+        const tags = otherFiles.map((item) => {
+          const name = escapeHtml2(item.name || "file");
+          const placeholder = item.placeholder ? "\uFF08\u672A\u7F13\u5B58\uFF09" : "";
+          return `<span class="user-file-chip">[\u6587\u4EF6] ${name}${placeholder}</span>`;
+        }).join("");
         parts.push(`<div class="user-file-row">${tags}</div>`);
       }
       if (!parts.length) {
@@ -5617,6 +5900,28 @@ ${renderedAnswer}`.trim();
     function buildMessages() {
       return buildMessagesFrom(messageHistory);
     }
+    function sanitizeRequestContent(content) {
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return content;
+      return content.map((block) => {
+        if (!block || typeof block !== "object") return null;
+        if (block.type === "text") {
+          const text = String(block.text || "");
+          return text ? { type: "text", text } : null;
+        }
+        if (block.type === "image_url") {
+          const imageUrl = block.image_url && typeof block.image_url === "object" ? String(block.image_url.url || "").trim() : String(block.url || "").trim();
+          if (!imageUrl) return null;
+          return { type: "image_url", image_url: { url: imageUrl } };
+        }
+        if (block.type === "file") {
+          const fileData = block.file && typeof block.file === "object" ? String(block.file.file_data || "").trim() : String(block.url || block.data || "").trim();
+          if (!fileData) return null;
+          return { type: "file", file: { file_data: fileData } };
+        }
+        return null;
+      }).filter(Boolean);
+    }
     function buildMessagesFrom(history) {
       const payload = [];
       const systemPrompt = systemInput ? systemInput.value.trim() : "";
@@ -5624,7 +5929,7 @@ ${renderedAnswer}`.trim();
         payload.push({ role: "system", content: systemPrompt });
       }
       for (const msg of history) {
-        payload.push({ role: msg.role, content: msg.content });
+        payload.push({ role: msg.role, content: sanitizeRequestContent(msg.content) });
       }
       return payload;
     }
@@ -5849,6 +6154,26 @@ ${renderedAnswer}`.trim();
         reader.readAsArrayBuffer(file);
       });
     }
+    async function uploadCachedChatImage(file) {
+      const formData = new FormData();
+      formData.append("file", file, file.name || "image");
+      let headers = {};
+      try {
+        const authHeader = await ensurePublicKey();
+        headers = buildAuthHeaders(authHeader);
+      } catch (e) {
+      }
+      const res = await fetch("/v1/public/chat/upload-image", {
+        method: "POST",
+        headers,
+        body: formData
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.status !== "success" || !data.url) {
+        throw new Error(data.detail || "\u56FE\u7247\u7F13\u5B58\u4E0A\u4F20\u5931\u8D25");
+      }
+      return data;
+    }
     function buildUniqueFileName(name) {
       const baseName = name || "file";
       const exists = new Set(attachments.map((item) => item.name));
@@ -5867,17 +6192,33 @@ ${renderedAnswer}`.trim();
     async function handleFileSelect(file) {
       if (!file) return false;
       try {
-        let dataUrl = "";
-        try {
-          dataUrl = await readFileAsDataUrl(file);
-        } catch (e) {
-          dataUrl = await readFileAsDataUrlFallback(file);
+        const safeName = buildUniqueFileName(file.name || "file");
+        const isImage = String(file.type || "").startsWith("image/");
+        if (isImage) {
+          const uploaded = await uploadCachedChatImage(file);
+          attachments.push({
+            name: safeName,
+            data: uploaded.url,
+            url: uploaded.url,
+            mime: uploaded.content_type || file.type || "image/jpeg",
+            size: Number(uploaded.size_bytes || file.size || 0) || 0,
+            cached: true,
+            cacheName: uploaded.filename || ""
+          });
+        } else {
+          let dataUrl = "";
+          try {
+            dataUrl = await readFileAsDataUrl(file);
+          } catch (e) {
+            dataUrl = await readFileAsDataUrlFallback(file);
+          }
+          attachments.push({
+            name: safeName,
+            data: dataUrl,
+            mime: file.type || "",
+            size: Number(file.size || 0) || 0
+          });
         }
-        attachments.push({
-          name: buildUniqueFileName(file.name || "file"),
-          data: dataUrl,
-          mime: file.type || ""
-        });
         try {
           showAttachmentBadge();
         } catch (e) {

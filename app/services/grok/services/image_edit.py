@@ -1120,6 +1120,7 @@ class ImageEditService:
                 token,
                 response_format=response_format,
                 progress_cb=progress_cb,
+                max_images=None if return_all_images else 1,
             )
             return await processor.process(response)
 
@@ -1137,9 +1138,7 @@ class ImageEditService:
                     share_items.append((post_id, image_url))
             for post_id, image_url in share_items:
                 await _try_log_image_share_link(token, post_id, local_url=image_url)
-        if return_all_images:
-            return all_images
-        return [all_images[0]]
+        return all_images
 
 
 class ImageStreamProcessor(BaseProcessor):
@@ -1313,12 +1312,14 @@ class ImageCollectProcessor(BaseProcessor):
         token: str = "",
         response_format: str = "b64_json",
         progress_cb: Callable[[str, dict], Any] | None = None,
+        max_images: int | None = None,
     ):
         if response_format == "base64":
             response_format = "b64_json"
         super().__init__(model, token)
         self.response_format = response_format
         self.progress_cb = progress_cb
+        self.max_images = max_images if isinstance(max_images, int) and max_images > 0 else None
 
     async def _emit_progress(
         self, event: str, progress: int, message: str, **extra: Any
@@ -1381,6 +1382,8 @@ class ImageCollectProcessor(BaseProcessor):
                                         f"已下载第 {len(images)} 张图片",
                                         count=len(images),
                                     )
+                                    if self.max_images and len(images) >= self.max_images:
+                                        return images
                                 continue
                             try:
                                 dl_service = self._get_dl()
@@ -1400,6 +1403,8 @@ class ImageCollectProcessor(BaseProcessor):
                                         f"已下载第 {len(images)} 张图片",
                                         count=len(images),
                                     )
+                                    if self.max_images and len(images) >= self.max_images:
+                                        return images
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to convert image to base64, falling back to URL: {e}"
@@ -1414,6 +1419,8 @@ class ImageCollectProcessor(BaseProcessor):
                                         f"已下载第 {len(images)} 张图片",
                                         count=len(images),
                                     )
+                                    if self.max_images and len(images) >= self.max_images:
+                                        return images
 
         except asyncio.CancelledError:
             logger.debug("Image collect cancelled by client")

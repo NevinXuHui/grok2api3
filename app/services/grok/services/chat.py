@@ -268,6 +268,19 @@ def extract_render_payload(model_response: Dict[str, Any]) -> Dict[str, Any] | N
     }
 
 
+def _extract_stream_response(data: Any) -> Dict[str, Any] | None:
+    """安全提取流式事件中的 response，避免上游返回 null 时崩溃。"""
+    if not isinstance(data, dict):
+        return None
+    result = data.get("result")
+    if not isinstance(result, dict):
+        return None
+    response = result.get("response")
+    if not isinstance(response, dict):
+        return None
+    return response
+
+
 def _parse_card_attachments_json(card_attachments: Any) -> List[Dict[str, Any]]:
     parsed: List[Dict[str, Any]] = []
     for raw in card_attachments or []:
@@ -1094,7 +1107,9 @@ class StreamProcessor(proc_base.BaseProcessor):
                 except orjson.JSONDecodeError:
                     continue
 
-                resp = data.get("result", {}).get("response", {})
+                resp = _extract_stream_response(data)
+                if resp is None:
+                    continue
                 self._capture_seq += 1
                 _capture_app_chat_event(resp, self.model, "stream", self._capture_seq)
                 is_thinking = bool(resp.get("isThinking"))
@@ -1175,10 +1190,15 @@ class StreamProcessor(proc_base.BaseProcessor):
                             image = card_data.get("image") or {}
                             original = image.get("original")
                             title = image.get("title") or ""
-                            if not original and "image_chunk" in card_data:
-                                original = card_data["image_chunk"].get("imageUrl")
+                            image_chunk = (
+                                card_data.get("image_chunk")
+                                if isinstance(card_data.get("image_chunk"), dict)
+                                else {}
+                            )
+                            if not original and image_chunk:
+                                original = image_chunk.get("imageUrl")
                                 if not title:
-                                    title = card_data["image_chunk"].get("imageTitle") or "Generated Image"
+                                    title = image_chunk.get("imageTitle") or "Generated Image"
                             if original:
                                 async for chunk in self._close_think_block():
                                     yield chunk
@@ -1384,7 +1404,9 @@ class CollectProcessor(proc_base.BaseProcessor):
                 except orjson.JSONDecodeError:
                     continue
 
-                resp = data.get("result", {}).get("response", {})
+                resp = _extract_stream_response(data)
+                if resp is None:
+                    continue
                 capture_seq += 1
                 _capture_app_chat_event(resp, self.model, "collect", capture_seq)
 

@@ -40,7 +40,7 @@ class ImagineWebSocketReverse:
         url_lower = (url or "").lower()
         if url_lower.endswith((".jpg", ".jpeg")):
             return True
-        return blob_size > final_min_bytes
+        return False
 
     def _classify_image(self, url: str, blob: str, final_min_bytes: int, medium_min_bytes: int) -> Optional[Dict[str, object]]:
         if not url or not blob:
@@ -158,7 +158,6 @@ class ImagineWebSocketReverse:
         timeout = float(get_config("image.timeout"))
         stream_timeout = float(get_config("image.stream_timeout"))
         final_timeout = float(get_config("image.final_timeout"))
-        blocked_grace = min(10.0, final_timeout)
         final_min_bytes = int(get_config("image.final_min_bytes"))
         medium_min_bytes = int(get_config("image.medium_min_bytes"))
 
@@ -208,12 +207,6 @@ class ImagineWebSocketReverse:
                         ws_msg = await asyncio.wait_for(ws.receive(), timeout=5.0)
                     except asyncio.TimeoutError:
                         now = time.monotonic()
-                        if (
-                            medium_received_time
-                            and completed == 0
-                            and now - medium_received_time > blocked_grace
-                        ):
-                            raise _BlockedError()
                         if completed > 0 and now - last_activity > 10:
                             logger.info(
                                 f"WebSocket idle timeout, collected {completed} images"
@@ -268,13 +261,6 @@ class ImagineWebSocketReverse:
                         if completed >= n:
                             logger.info(f"WebSocket collected {completed} final images")
                             break
-
-                        if (
-                            medium_received_time
-                            and completed == 0
-                            and time.monotonic() - medium_received_time > final_timeout
-                        ):
-                            raise _BlockedError()
 
                     elif ws_msg.type in (
                         aiohttp.WSMsgType.CLOSED,

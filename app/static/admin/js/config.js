@@ -105,7 +105,8 @@ const LOCALE_MAP = {
     "final_timeout": { title: "最终图超时", desc: "收到中等图后等待最终图的超时秒数。" },
     "nsfw": { title: "NSFW 模式", desc: "WebSocket 请求是否启用 NSFW。" },
     "medium_min_bytes": { title: "中等图最小字节", desc: "判定中等质量图的最小字节数。" },
-    "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" }
+    "final_min_bytes": { title: "最终图最小字节", desc: "判定最终图的最小字节数（通常 JPG > 100KB）。" },
+    "edit_return_first_image_immediately": { title: "编辑首图直返", desc: "开启后，管理页图片编辑接口拿到第一张结果图就立即返回，不再等待后续第二张图。" }
   },
 
 
@@ -120,7 +121,8 @@ const LOCALE_MAP = {
     "list_batch_size": { title: "查询批次大小", desc: "单次查询可处理的 Token 数量。推荐 10。" },
     "delete_concurrent": { title: "删除并发", desc: "资产删除接口的最大并发数。推荐 10。" },
     "delete_timeout": { title: "删除超时", desc: "资产删除接口超时时间（秒）。推荐 60。" },
-    "delete_batch_size": { title: "删除批次大小", desc: "单次删除可处理的 Token 数量。推荐 10。" }
+    "delete_batch_size": { title: "删除批次大小", desc: "单次删除可处理的 Token 数量。推荐 10。" },
+    "create_public_share_link": { title: "创建公共分享链接", desc: "开启后，图片、图片编辑和视频生成成功时会自动创建公共分享链接并写入元数据。" }
   },
 
 

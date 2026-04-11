@@ -128,6 +128,8 @@ nsfw = true
 medium_min_bytes = 30000
 # 判定为最终图的最小字节数
 final_min_bytes = 100000
+# 图片编辑是否拿到第一张图后立即返回
+edit_return_first_image_immediately = false
 
 # ==================== 视频配置 ====================
 [video]
@@ -173,6 +175,8 @@ delete_concurrent = 100
 delete_timeout = 60
 # 资产删除批次大小（Token 维度）
 delete_batch_size = 50
+# 媒体生成成功后是否创建公共分享链接
+create_public_share_link = true
 
 # ==================== NSFW ====================
 [nsfw]
