@@ -165,6 +165,14 @@ def _classify_video_error(exc: Exception) -> tuple[str, str, int]:
     merged = f"{text}\n{body}"
 
     if (
+        "empty stream" in merged
+        or "upstream_empty_stream" in merged
+        or "returned empty stream" in merged
+        or "upstream eof before any video event" in merged
+    ):
+        return ("视频延长失败：上游没有返回视频事件，请稍后重试", "video_empty_stream", 502)
+
+    if (
         "blocked by moderation" in merged
         or "content moderated" in merged
         or "content-moderated" in merged
@@ -1038,13 +1046,26 @@ class VideoService:
     ) -> AsyncGenerator[bytes, None]:
         """通过 Grok 官方视频延长 API 延长视频。"""
         token_tag = _token_tag(token)
+        try:
+            start_time = float(video_extension_start_time or 0)
+        except (TypeError, ValueError):
+            start_time = 0.0
+
+        if start_time <= 0:
+            logger.info(
+                "Video extension start time defaulted: "
+                f"token={token_tag}, extend_post_id={extend_post_id}, "
+                f"requested={start_time}, default=6.0"
+            )
+            start_time = 6.0
+
         # 确定 mode
         prompt_text = (prompt or "").strip()
         is_custom = VideoService.is_meaningful_video_prompt(prompt_text)
         if is_custom:
             mode = "custom"
         else:
-            mode = VideoService._map_preset_to_mode(preset)
+            mode = "normal"
             prompt_text = ""
 
         effective_original = (original_post_id or "").strip() or extend_post_id
@@ -1053,7 +1074,7 @@ class VideoService:
         logger.info(
             "Video extension request: "
             f"token={token_tag}, extend_post_id={extend_post_id}, "
-            f"start_time={video_extension_start_time}, original_post_id={effective_original}, "
+            f"start_time={start_time}, original_post_id={effective_original}, "
             f"prompt='{(prompt_text or '')[:50]}', mode={mode}"
         )
 
@@ -1066,7 +1087,7 @@ class VideoService:
         # 构造 videoGenModelConfig —— 对齐官网抓包格式
         video_gen_config = {
             "isVideoExtension": True,
-            "videoExtensionStartTime": video_extension_start_time,
+            "videoExtensionStartTime": start_time,
             "extendPostId": extend_post_id,
             "stitchWithExtendPostId": stitch_with_extend,
             "originalPostId": effective_original,
@@ -1087,16 +1108,17 @@ class VideoService:
             }
         }
 
-        # fileAttachments 对齐官网：始终传最初图转视频时的 parentPostId
-        file_attachments = [effective_file_attachment]
+        # 官网新延长 payload 不再带顶层 fileAttachments。
+        # 源视频关系只放在 videoGenModelConfig，避免上游按旧协议解析后空流结束。
+        file_attachments: list[str] = []
 
         moderated_max_retry = max(1, int(get_config("video.moderated_max_retry", 5)))
 
         logger.info(
             "Video extension request prepared: "
             f"token={token_tag}, extend_post_id={extend_post_id}, "
-            f"file_attachments={file_attachments}, "
-            f"start_time={video_extension_start_time}, mode={mode}, "
+            f"legacy_file_attachment={effective_file_attachment or '-'}, "
+            f"start_time={start_time}, mode={mode}, "
             f"resolution={resolution}, video_length={video_length}, ratio={aspect_ratio}"
         )
 
@@ -1111,17 +1133,19 @@ class VideoService:
                             file_attachments=file_attachments,
                             tool_overrides={"videoGen": True},
                             model_config_override=model_config_override,
-                            mode=mode,
+                            mode=None,
                         )
                         stream_response = await AppChatReverse.request(
                             session,
                             token,
                             message=message,
                             model="grok-3",
-                            mode=mode,
+                            mode=None,
                             file_attachments=file_attachments,
                             tool_overrides={"videoGen": True},
                             model_config_override=model_config_override,
+                            omit_file_attachments=True,
+                            minimal_payload=True,
                         )
                         logger.info(
                             "Video extension started: "
@@ -1266,7 +1290,7 @@ class VideoService:
 
                 # Generate video.
                 service = VideoService()
-                if extend_post_id and video_extension_start_time is not None:
+                if extend_post_id:
                     # 视频延长路径
                     response = await service.generate_extend_video(
                         token=token,
@@ -1365,7 +1389,14 @@ class VideoService:
                         # 诱发初始请求，若发生 401 等异常，将在 completions 的 try 块内被捕捉。
                         first_chunk = await stream_iter.__anext__()
                     except StopAsyncIteration:
-                        first_chunk = None
+                        logger.warning(
+                            "Video upstream EOF before any video event; treating as failed request"
+                        )
+                        raise UpstreamException(
+                            "Video upstream returned empty stream",
+                            details={"status": 502, "code": "upstream_empty_stream"},
+                            status_code=502,
+                        )
 
                     async def _merged_stream(first, remaining):
                         if first is not None:

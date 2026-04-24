@@ -10,6 +10,7 @@ import json
 from typing import Optional, Dict
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -42,6 +43,23 @@ def _extract_browser_profile(user_agent: str) -> str:
     return "chrome120"
 
 
+def _normalize_flaresolverr_proxy(proxy_url: str) -> str:
+    """
+    FlareSolverr 官方 request.get 代理仅声明支持 http / socks4 / socks5。
+    当前项目内部可能使用 socks5h / socks4a，需要在这里降级成
+    FlareSolverr 可识别的 schema，由 FlareSolverr 自己完成后续代理连接。
+    """
+    raw = str(proxy_url or "").strip()
+    if not raw:
+        return ""
+    scheme = urlparse(raw).scheme.lower()
+    if scheme == "socks5h":
+        return raw.replace("socks5h://", "socks5://", 1)
+    if scheme == "socks4a":
+        return raw.replace("socks4a://", "socks4://", 1)
+    return raw
+
+
 async def solve_cf_challenge() -> Optional[Dict[str, str]]:
     """
     通过 FlareSolverr 访问 grok.com，自动过 CF 挑战，提取 cf_clearance。
@@ -65,8 +83,9 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
         "maxTimeout": cf_timeout * 1000,
     }
 
-    if proxy:
-        payload["proxy"] = {"url": proxy}
+    normalized_proxy = _normalize_flaresolverr_proxy(proxy)
+    if normalized_proxy:
+        payload["proxy"] = {"url": normalized_proxy}
 
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -93,7 +112,14 @@ async def solve_cf_challenge() -> Optional[Dict[str, str]]:
         cookies = solution.get("cookies", [])
 
         if not cookies:
-            logger.error("FlareSolverr 成功访问但没有返回 cookies")
+            message = str(result.get("message") or "").strip() or "-"
+            solved_url = str(solution.get("url") or "").strip() or GROK_URL
+            response_status = solution.get("status")
+            logger.error(
+                "FlareSolverr 成功访问但没有返回 cookies: "
+                f"message={message}, url={solved_url}, status={response_status}, "
+                f"proxy={normalized_proxy or '-'}"
+            )
             return None
 
         cookie_str = _extract_all_cookies(cookies)
